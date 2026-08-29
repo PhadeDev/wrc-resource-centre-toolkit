@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
-// @namespace    https://www.westminster.cadets.mod.uk/
-// @version      4.13
+// @namespace    https://westminster.cadetnet.mod.uk/
+// @version      4.14
 // @description  Resource Centre upload, folder, link, and bulk edit tools.
-// @match        https://www.westminster.cadets.mod.uk/app/r/westminster/resource_centre/home*
+// @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
+// @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @grant        none
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/PhadeDev/wrc-resource-centre-toolkit/main/wrc-bulk-uploader.user.js
@@ -14,7 +15,7 @@
   'use strict';
 
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.13';
+  const SCRIPT_VERSION  = '4.14';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;

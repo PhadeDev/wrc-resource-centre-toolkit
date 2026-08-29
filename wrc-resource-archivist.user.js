@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Westminster RC - Resource Centre Archivist
-// @namespace    https://www.westminster.cadets.mod.uk/
-// @version      0.1
+// @namespace    https://westminster.cadetnet.mod.uk/
+// @version      0.2
 // @description  Build a Resource Centre archive manifest and download documents into folder structure.
-// @match        https://www.westminster.cadets.mod.uk/app/r/westminster/resource_centre/manage-documents*
-// @match        https://www.westminster.cadets.mod.uk/app/r/westminster/resource_centre/bulk-manage-documents*
+// @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/manage-documents*
+// @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/bulk-manage-documents*
+// @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/manage-documents*
+// @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/bulk-manage-documents*
 // @grant        none
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/PhadeDev/wrc-resource-centre-toolkit/main/wrc-resource-archivist.user.js
