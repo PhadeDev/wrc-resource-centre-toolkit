@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
 // @namespace    https://westminster.cadetnet.mod.uk/
-// @version      4.15
+// @version      4.16
 // @description  Resource Centre upload, folder, link, and bulk edit tools.
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
@@ -15,7 +15,7 @@
   'use strict';
 
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.15';
+  const SCRIPT_VERSION  = '4.16';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;
@@ -2194,9 +2194,9 @@
     btn.textContent = '🧹 From filename';
     btn.title = 'Fill Display Name from the uploaded file (strips extension, underscores and dots)';
     btn.style.cssText =
-      'margin-left:8px;padding:3px 9px;font-size:11px;font-weight:600;' +
+      'display:inline-block;margin:4px 0 0;padding:3px 9px;font-size:11px;font-weight:600;' +
       'border:1px solid #0572ce;border-radius:4px;background:#eaf4ff;color:#0572ce;' +
-      'cursor:pointer;vertical-align:middle;';
+      'cursor:pointer;';
 
     btn.addEventListener('click', e => {
       e.preventDefault();
@@ -2212,9 +2212,10 @@
       setTimeout(() => { btn.textContent = orig; }, 1500);
     });
 
-    const container = nameField.closest('.t-Form-fieldContainer') || nameField.parentElement;
-    if (container) container.appendChild(btn);
-    else nameField.insertAdjacentElement('afterend', btn);
+    // Insert as the input's own next sibling (not the whole label+input
+    // container) so it lands tight against Display Name instead of being
+    // pushed elsewhere by the form's grid layout.
+    nameField.insertAdjacentElement('afterend', btn);
   }
 
   function startCleanNameButtonWatcher() {
