@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
 // @namespace    https://westminster.cadetnet.mod.uk/
-// @version      4.16
+// @version      4.17
 // @description  Resource Centre upload, folder, link, and bulk edit tools.
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
@@ -15,7 +15,7 @@
   'use strict';
 
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.16';
+  const SCRIPT_VERSION  = '4.17';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;
@@ -2188,15 +2188,26 @@
     const nameField = doc.getElementById('P5_DISPLAY_NAME');
     if (!nameField || doc.getElementById('wrc-clean-name-btn')) return;
 
+    // Anchor to the input's own immediate wrapper and position the button
+    // absolutely against it. The form's grid/flex layout kept re-fighting
+    // an in-flow button (v4.15 pushed it off to the side, v4.16 let it
+    // collapse/overlap the input) — taking it out of flow entirely sidesteps
+    // that for good.
+    const anchor = nameField.parentElement || nameField;
+    if (getComputedStyle(anchor).position === 'static') {
+      anchor.style.position = 'relative';
+    }
+
     const btn = doc.createElement('button');
     btn.type = 'button';
     btn.id = 'wrc-clean-name-btn';
     btn.textContent = '🧹 From filename';
     btn.title = 'Fill Display Name from the uploaded file (strips extension, underscores and dots)';
     btn.style.cssText =
-      'display:inline-block;margin:4px 0 0;padding:3px 9px;font-size:11px;font-weight:600;' +
+      'position:absolute;left:100%;top:50%;transform:translateY(-50%);' +
+      'margin-left:8px;padding:3px 9px;font-size:11px;font-weight:600;white-space:nowrap;' +
       'border:1px solid #0572ce;border-radius:4px;background:#eaf4ff;color:#0572ce;' +
-      'cursor:pointer;';
+      'cursor:pointer;z-index:5;';
 
     btn.addEventListener('click', e => {
       e.preventDefault();
@@ -2212,10 +2223,7 @@
       setTimeout(() => { btn.textContent = orig; }, 1500);
     });
 
-    // Insert as the input's own next sibling (not the whole label+input
-    // container) so it lands tight against Display Name instead of being
-    // pushed elsewhere by the form's grid layout.
-    nameField.insertAdjacentElement('afterend', btn);
+    anchor.appendChild(btn);
   }
 
   function startCleanNameButtonWatcher() {
