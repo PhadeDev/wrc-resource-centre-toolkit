@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
 // @namespace    https://westminster.cadetnet.mod.uk/
-// @version      4.18
+// @version      4.19
 // @description  Resource Centre upload, folder, link, and bulk edit tools.
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
@@ -15,7 +15,7 @@
   'use strict';
 
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.18';
+  const SCRIPT_VERSION  = '4.19';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;
@@ -2254,6 +2254,33 @@
     setItemValue(doc, ifWin, 'P5_PUBLISHED_START_DATE_input', formatApexDateTime(roundedPastHalfHour(new Date())));
   }
 
+  // ── TEMP diagnostic: Add External Link doesn't get the Start Date autofill
+  // that Add Document does. Logs once per form-open so we can see whether
+  // the field id differs on that form, or isSavedEditForm() is misfiring
+  // and treating a fresh Add Link form as an edit. Safe to remove once the
+  // real cause is confirmed and fixed properly.
+  function logPublishFieldDiagnostics(doc) {
+    if (doc.documentElement.dataset.wrcPubDiag) return;
+    doc.documentElement.dataset.wrcPubDiag = '1';
+
+    const field = doc.getElementById('P5_PUBLISHED_START_DATE_input');
+    const isEdit = isSavedEditForm(doc);
+    const matchedButtons = Array.from(doc.querySelectorAll('button, input[type="submit"], input[type="button"]'))
+      .map(el => (el.textContent || el.value || '').trim())
+      .filter(t => /apply\s+changes|^delete$/i.test(t));
+    const altFields = Array.from(doc.querySelectorAll('input, select, textarea'))
+      .map(el => el.id)
+      .filter(id => /PUBLISH/i.test(id || ''));
+
+    log(
+      `Diag: P5_PUBLISHED_START_DATE_input ${field ? `found (value "${field.value}")` : 'NOT FOUND'}; ` +
+      `form classed as ${isEdit ? 'EDIT — autofill skipped' : 'ADD — autofill applies'}` +
+      (matchedButtons.length ? `; matched Edit-button text: [${matchedButtons.join(', ')}]` : '') +
+      `; PUBLISH-ish field ids seen: [${altFields.join(', ') || 'none'}]`,
+      'info'
+    );
+  }
+
   // ── Shared watcher for the manage-document iframe (Add Document/Add Link) ─
   function startManageDocumentFormWatcher() {
     setInterval(() => {
@@ -2264,6 +2291,7 @@
       if (!doc) return;
       injectCleanNameButton(doc, iframe.contentWindow);
       autofillPublishedStartDate(doc, iframe.contentWindow);
+      logPublishFieldDiagnostics(doc);
     }, 700);
   }
   startManageDocumentFormWatcher();
