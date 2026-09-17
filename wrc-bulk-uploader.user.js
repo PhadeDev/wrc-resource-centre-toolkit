@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
 // @namespace    https://westminster.cadetnet.mod.uk/
-// @version      4.17
+// @version      4.18
 // @description  Resource Centre upload, folder, link, and bulk edit tools.
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
@@ -15,7 +15,7 @@
   'use strict';
 
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.17';
+  const SCRIPT_VERSION  = '4.18';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;
@@ -2226,15 +2226,46 @@
     anchor.appendChild(btn);
   }
 
-  function startCleanNameButtonWatcher() {
+  // ── Auto-default Published Start Date on manual Add (not Edit) forms ──────
+  // A blank Start Date silently blocks Add/Add Link until it's filled in.
+  // Default it to "now, rounded down to the last half hour" so the item
+  // publishes live immediately instead of nagging every single time.
+  // Skipped whenever the form is a saved Edit (Apply Changes/Delete present)
+  // so an existing item's deliberately-blank Start Date is never touched.
+  const APEX_MONTH_ABBR = ['JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC'];
+
+  function roundedPastHalfHour(d) {
+    const r = new Date(d);
+    r.setMinutes(r.getMinutes() < 30 ? 0 : 30, 0, 0);
+    return r;
+  }
+
+  function formatApexDateTime(d) {
+    const dd = String(d.getDate()).padStart(2, '0');
+    const mon = APEX_MONTH_ABBR[d.getMonth()];
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mi = String(d.getMinutes()).padStart(2, '0');
+    return `${dd}-${mon}-${d.getFullYear()} ${hh}:${mi}`;
+  }
+
+  function autofillPublishedStartDate(doc, ifWin) {
+    const field = doc.getElementById('P5_PUBLISHED_START_DATE_input');
+    if (!field || field.value.trim() || isSavedEditForm(doc)) return;
+    setItemValue(doc, ifWin, 'P5_PUBLISHED_START_DATE_input', formatApexDateTime(roundedPastHalfHour(new Date())));
+  }
+
+  // ── Shared watcher for the manage-document iframe (Add Document/Add Link) ─
+  function startManageDocumentFormWatcher() {
     setInterval(() => {
       const iframe = findIframe();
       if (!iframe) return;
       let doc;
       try { doc = iframe.contentDocument; } catch (_) { return; }
-      if (doc) injectCleanNameButton(doc, iframe.contentWindow);
+      if (!doc) return;
+      injectCleanNameButton(doc, iframe.contentWindow);
+      autofillPublishedStartDate(doc, iframe.contentWindow);
     }, 700);
   }
-  startCleanNameButtonWatcher();
+  startManageDocumentFormWatcher();
 
 })();
