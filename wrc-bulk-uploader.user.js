@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
 // @namespace    https://westminster.cadetnet.mod.uk/
-// @version      4.19
+// @version      4.20
 // @description  Resource Centre upload, folder, link, and bulk edit tools.
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
@@ -15,7 +15,7 @@
   'use strict';
 
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.19';
+  const SCRIPT_VERSION  = '4.20';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;
@@ -2248,52 +2248,43 @@
     return `${dd}-${mon}-${d.getFullYear()} ${hh}:${mi}`;
   }
 
-  function autofillPublishedStartDate(doc, ifWin) {
-    const field = doc.getElementById('P5_PUBLISHED_START_DATE_input');
+  // Works against a directly-supplied field element rather than a hardcoded
+  // id, since Add Document (manage-document) and Add External Link
+  // (manage-external-link) are different pages with different item id
+  // prefixes but the same "...PUBLISH...START...DATE..." naming pattern.
+  function autofillPublishedStartDateField(doc, ifWin, field) {
     if (!field || field.value.trim() || isSavedEditForm(doc)) return;
-    setItemValue(doc, ifWin, 'P5_PUBLISHED_START_DATE_input', formatApexDateTime(roundedPastHalfHour(new Date())));
+    setItemValue(doc, ifWin, field.id, formatApexDateTime(roundedPastHalfHour(new Date())));
   }
 
-  // ── TEMP diagnostic: Add External Link doesn't get the Start Date autofill
-  // that Add Document does. Logs once per form-open so we can see whether
-  // the field id differs on that form, or isSavedEditForm() is misfiring
-  // and treating a fresh Add Link form as an edit. Safe to remove once the
-  // real cause is confirmed and fixed properly.
-  function logPublishFieldDiagnostics(doc) {
-    if (doc.documentElement.dataset.wrcPubDiag) return;
-    doc.documentElement.dataset.wrcPubDiag = '1';
-
-    const field = doc.getElementById('P5_PUBLISHED_START_DATE_input');
-    const isEdit = isSavedEditForm(doc);
-    const matchedButtons = Array.from(doc.querySelectorAll('button, input[type="submit"], input[type="button"]'))
-      .map(el => (el.textContent || el.value || '').trim())
-      .filter(t => /apply\s+changes|^delete$/i.test(t));
-    const altFields = Array.from(doc.querySelectorAll('input, select, textarea'))
-      .map(el => el.id)
-      .filter(id => /PUBLISH/i.test(id || ''));
-
-    log(
-      `Diag: P5_PUBLISHED_START_DATE_input ${field ? `found (value "${field.value}")` : 'NOT FOUND'}; ` +
-      `form classed as ${isEdit ? 'EDIT — autofill skipped' : 'ADD — autofill applies'}` +
-      (matchedButtons.length ? `; matched Edit-button text: [${matchedButtons.join(', ')}]` : '') +
-      `; PUBLISH-ish field ids seen: [${altFields.join(', ') || 'none'}]`,
-      'info'
-    );
+  function findPublishStartDateFields(doc) {
+    return Array.from(doc.querySelectorAll('input, select, textarea'))
+      .filter(el => /PUBLISH.*START.*DATE/i.test(el.id || ''));
   }
 
-  // ── Shared watcher for the manage-document iframe (Add Document/Add Link) ─
-  function startManageDocumentFormWatcher() {
+  // findIframe() (used by the bulk-upload automation elsewhere in this
+  // script) only matches manage-document, so it never sees the Add External
+  // Link dialog, which loads manage-external-link instead. This one covers
+  // both, purely for the manual-use helpers below.
+  function findManualFormIframe() {
+    return Array.from(document.querySelectorAll('iframe')).find(f => {
+      const src = f.src || '';
+      return src.includes('manage-document') || src.includes('manage-external-link');
+    });
+  }
+
+  // ── Watcher: Add Document / Add External Link manual-use helpers ──────────
+  function startManualFormWatcher() {
     setInterval(() => {
-      const iframe = findIframe();
+      const iframe = findManualFormIframe();
       if (!iframe) return;
       let doc;
       try { doc = iframe.contentDocument; } catch (_) { return; }
       if (!doc) return;
       injectCleanNameButton(doc, iframe.contentWindow);
-      autofillPublishedStartDate(doc, iframe.contentWindow);
-      logPublishFieldDiagnostics(doc);
+      findPublishStartDateFields(doc).forEach(f => autofillPublishedStartDateField(doc, iframe.contentWindow, f));
     }, 700);
   }
-  startManageDocumentFormWatcher();
+  startManualFormWatcher();
 
 })();
