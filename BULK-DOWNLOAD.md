@@ -1,10 +1,10 @@
-# Toolkit bulk downloads (v4.23)
+# Toolkit bulk downloads (v4.24)
 
 The existing Toolkit now also runs on Manage Documents. On that page it shows only bulk download controls. The upload/home view remains available on the Resource Centre home page. The separate Archivist is not required for this workflow.
 
 1. Update the Toolkit in Violentmonkey or Tampermonkey, then reload Manage Documents.
 2. Apply the site's filters. Set the report rows per page to include the batch you want. Keep File Name, Download and # Folder Entries columns visible. Rows with zero Folder Entries are skipped and listed in the results, based on the user's observed broken downloads for these records.
-3. Click **Choose download folder** and select the exact local batch folder in Chrome or Edge. Approve the browser's folder-write prompt.
+3. Click **Choose download folder** and select the exact local batch folder in Chrome or Edge. Approve the browser's folder-write prompt. The last folder handle is saved in this site's IndexedDB and restored on refresh; clicking Download may require renewed write permission. Choose download folder changes the remembered folder. Clearing site data removes this memory. It is separate from the uploader's remembered source folder.
 4. Set the pause between files if required (default 3 seconds).
 5. Click **Download displayed files**. Keep the page open until it finishes. The results show saved files and failures. **Stop** cancels an active fetch or stops between files; an in-progress disk write finishes.
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
 // @namespace    https://westminster.cadetnet.mod.uk/
-// @version      4.23
+// @version      4.24
 // @description  Resource Centre upload, folder, link, bulk edit, and sequential download tools.
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
@@ -31,7 +31,7 @@
     panel.id = 'wrc-download-panel';
     panel.style.cssText = 'position:fixed;bottom:24px;right:24px;width:380px;max-width:calc(100vw - 32px);max-height:80vh;overflow:auto;z-index:2147483646;background:white;color:#222;border:2px solid #0572ce;border-radius:8px;box-shadow:0 6px 24px #0003;font:13px Segoe UI,sans-serif;padding:12px;box-sizing:border-box';
     panel.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.23</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
+      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.24</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
       <div id="wrc-dl-body">
         <h3 style="margin:12px 0 6px">Bulk download</h3>
         <p>Downloads files currently displayed in Manage Documents. Apply your filters and increase rows per page first. Other pages are not included.</p>
@@ -53,6 +53,15 @@
       get('log').scrollTop = get('log').scrollHeight;
     };
     get('min').onclick = () => { get('body').hidden = !get('body').hidden; };
+    get('folder').disabled = get('start').disabled = true;
+    rememberDownloadFolder().then(saved => {
+      if (saved?.kind === 'directory') {
+        destination = saved;
+        get('destination').textContent = 'Remembered folder: ' + saved.name;
+        status('Last download folder restored. Click Download to approve access if the browser asks.');
+      }
+    }).catch(() => { status('Folder memory unavailable. Choose a download folder for this session.'); })
+      .finally(() => { get('folder').disabled = get('start').disabled = false; });
     get('folder').onclick = async () => {
       if (!window.showDirectoryPicker) {
         status('Folder saving is unavailable in this browser. Use Chrome or Edge.');
@@ -61,6 +70,8 @@
       try {
         destination = await window.showDirectoryPicker({ mode: 'readwrite' });
         get('destination').textContent = 'Folder: ' + destination.name;
+        try { await rememberDownloadFolder(destination); }
+        catch (_) { status('Folder selected, but could not remember it for the next refresh.'); }
       } catch (error) {
         if (error.name !== 'AbortError') status('Folder selection failed: ' + error.message);
       }
@@ -73,6 +84,14 @@
     get('start').onclick = async () => {
       if (busy) return;
       if (!destination) { status('Choose a download folder first.'); return; }
+      // Permission requests need this explicit user click after a refresh.
+      if (destination.queryPermission) {
+        try {
+          let permission = await destination.queryPermission({ mode: 'readwrite' });
+          if (permission !== 'granted') permission = await destination.requestPermission({ mode: 'readwrite' });
+          if (permission !== 'granted') { status('Folder access was not granted. Allow access or choose another folder.'); return; }
+        } catch (error) { status('Cannot access the remembered folder. Choose it again: ' + error.message); return; }
+      }
       let files;
       const skipped = [];
       get('log').replaceChildren();
@@ -146,6 +165,26 @@
     catch (error) { if (error.name === 'NotFoundError') return false; throw error; }
   }
 
+  function rememberDownloadFolder(handle) {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('wrc_toolkit_downloads', 1);
+      request.onupgradeneeded = () => request.result.createObjectStore('folders');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        let result;
+        try {
+          const transaction = db.transaction('folders', handle ? 'readwrite' : 'readonly');
+          const store = transaction.objectStore('folders');
+          const operation = handle ? store.put(handle, 'last_download_folder') : store.get('last_download_folder');
+          operation.onsuccess = () => { result = operation.result; };
+          transaction.oncomplete = () => { db.close(); resolve(result); };
+          transaction.onabort = transaction.onerror = () => { db.close(); reject(transaction.error || new Error('Folder storage failed')); };
+        } catch (error) { db.close(); reject(error); }
+      };
+    });
+  }
+
   function collectDisplayedDownloads(root, onSkip = () => {}) {
     const normalize = text => String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
     const files = new Map();
@@ -187,7 +226,7 @@
 
 
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.23';
+  const SCRIPT_VERSION  = '4.24';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;

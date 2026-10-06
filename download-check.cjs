@@ -35,13 +35,28 @@ assert.equal(vm.runInContext('collectDisplayedDownloads(report).length',context)
   const saved=[];
   const disk=new Map();
   function directory(path='batch'){
-    return {name:path,async getDirectoryHandle(name){return directory(path+'/'+name)},async getFileHandle(name,options){
+    return {name:path,kind:'directory',async getDirectoryHandle(name){return directory(path+'/'+name)},async getFileHandle(name,options){
       const key=path+'/'+name;
       if(!options?.create && !disk.has(key)) throw Object.assign(new Error(),{name:'NotFoundError'});
       if(options?.create) disk.set(key,true);
       return {async createWritable(){return {async write(blob){assert.equal(blob.size,4)},async close(){saved.push(key)},async abort(){}}}};
     }};
   }
+  const remembered=new Map();
+  context.indexedDB={open(){
+    const request={};
+    setTimeout(()=>{
+      request.result={close(){},transaction(){
+        const transaction={objectStore(){return {
+          get(key){return operation(key)},put(value,key){remembered.set(key,value);return operation(key)}
+        }}};
+        function operation(key){const request={};setTimeout(()=>{request.result=remembered.get(key);request.onsuccess?.();transaction.oncomplete?.()},0);return request}
+        return transaction;
+      }};
+      request.onsuccess();
+    },0);
+    return request;
+  }};
   const document={body:{appendChild(){}},createElement(){const item=element();item.querySelector=selector=>elements[selector] ||= element();return item},querySelectorAll:()=>context.report.querySelectorAll()};
   context.document=document;
   context.window={showDirectoryPicker:async()=>directory()};
@@ -72,5 +87,17 @@ assert.equal(vm.runInContext('collectDisplayedDownloads(report).length',context)
   await elements['#wrc-dl-start'].onclick();
   assert.equal(saved.length,2,'Stopping an active download must prevent saving its response');
   assert.match(elements['#wrc-dl-status'].textContent,/Stopped/);
-  console.log('Download checks passed: report scope, deduplication, unsafe names, duplicate names, permission errors, chosen folder, sequential requests, overwrite protection, and login response stop.');
+  vm.runInContext('startDownloadView()',context);
+  await new Promise(resolve=>setTimeout(resolve,20));
+  assert.match(elements['#wrc-dl-destination'].textContent,/Remembered folder: batch/);
+  const savedFolder=remembered.get('last_download_folder');
+  let approvals=0;
+  savedFolder.queryPermission=async()=> 'prompt';
+  savedFolder.requestPermission=async()=>{approvals++;return 'denied'};
+  requests=0;
+  context.fetch=async()=>{requests++;throw Error('Should not fetch')};
+  await elements['#wrc-dl-start'].onclick();
+  assert.equal(approvals,1);
+  assert.equal(requests,0,'Denied remembered-folder access prevents downloading');
+  console.log('Download checks passed, including restoring the chosen folder after refresh and requesting write access before downloads.');
 })().catch(error=>{console.error(error);process.exitCode=1});
