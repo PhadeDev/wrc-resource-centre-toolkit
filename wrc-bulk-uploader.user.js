@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
 // @namespace    https://westminster.cadetnet.mod.uk/
-// @version      4.25
+// @version      4.26
 // @description  Resource Centre upload, folder, link, bulk edit, and sequential download tools.
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
@@ -31,11 +31,11 @@
     panel.id = 'wrc-download-panel';
     panel.style.cssText = 'position:fixed;bottom:24px;right:24px;width:380px;max-width:calc(100vw - 32px);max-height:80vh;overflow:auto;z-index:2147483646;background:white;color:#222;border:2px solid #0572ce;border-radius:8px;box-shadow:0 6px 24px #0003;font:13px Segoe UI,sans-serif;padding:12px;box-sizing:border-box';
     panel.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.25</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
+      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.26</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
       <div id="wrc-dl-body">
         <h3 style="margin:12px 0 6px">Bulk download</h3>
         <p>Downloads files currently displayed in Manage Documents. Apply your filters and increase rows per page first. Other pages are not included.</p>
-        <p>Rows with zero Folder Entries are skipped. Original filenames, raw files only. Filename clashes are saved in a document-ID subfolder. Existing files are never overwritten.</p>
+        <p>Rows with zero Folder Entries are skipped. Original filenames, raw files only. Filename clashes get a document-ID suffix, all in your chosen folder. Existing files are never overwritten.</p>
         <button type="button" id="wrc-dl-folder">Choose download folder</button>
         <p id="wrc-dl-destination">No folder selected.</p>
         <label>Pause between files (seconds): <input id="wrc-dl-delay" type="number" min="1" max="60" value="3" style="width:55px"></label>
@@ -131,17 +131,20 @@
             if (!blob.size) throw new Error('Empty response');
             // APEX authentication/error pages must never be saved as documents.
             if (/text\/html|application\/xhtml/i.test(blob.type) && !/\.html?$/i.test(file.name)) throw new Error('Server returned a web page instead of the file; file may be unavailable.');
-            let folder = destination;
-            if (counts.get(file.name.toLowerCase()) > 1 || await downloadFileExists(folder, file.name)) {
-              folder = await destination.getDirectoryHandle('WRC-' + file.id, { create: true });
+            let filename = file.name;
+            if (counts.get(file.name.toLowerCase()) > 1 || await downloadFileExists(destination, filename)) {
+              const dot = filename.lastIndexOf('.');
+              filename = dot > 0
+                ? `${filename.slice(0, dot)} [WRC-${file.id}]${filename.slice(dot)}`
+                : `${filename} [WRC-${file.id}]`;
             }
-            if (await downloadFileExists(folder, file.name)) throw new Error('File already exists in WRC-' + file.id + '; skipped to avoid overwriting');
-            const handle = await folder.getFileHandle(file.name, { create: true });
+            if (await downloadFileExists(destination, filename)) throw new Error('File already exists: ' + filename + '; skipped to avoid overwriting');
+            const handle = await destination.getFileHandle(filename, { create: true });
             const writer = await handle.createWritable();
             try { await writer.write(blob); await writer.close(); }
             catch (error) { await writer.abort().catch(() => {}); throw error; }
             done++;
-            log('Saved: ' + (folder === destination ? '' : 'WRC-' + file.id + '/') + file.name);
+            log('Saved: ' + filename);
           } catch (error) {
             if (stopped) break;
             failed++;
@@ -260,7 +263,7 @@
 
 
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.25';
+  const SCRIPT_VERSION  = '4.26';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;

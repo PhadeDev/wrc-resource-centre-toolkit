@@ -73,7 +73,7 @@ assert.equal(vm.runInContext('collectDisplayedDownloads(report).length',context)
   vm.runInContext('startDownloadView()',context);
   await elements['#wrc-dl-folder'].onclick();
   await elements['#wrc-dl-start'].onclick();
-  assert.deepEqual(saved,['batch/WRC-10/same.pdf','batch/WRC-11/same.pdf']);
+  assert.deepEqual(saved,['batch/same [WRC-10].pdf','batch/same [WRC-11].pdf']);
   assert.equal(maxActive,1);
   assert.deepEqual(resolvedIds,['10','11'],'Resolve each document ID through the observed APEX process');
   await elements['#wrc-dl-start'].onclick();
