@@ -8,6 +8,10 @@ vm.runInContext(fragment.slice(fragment.indexOf('  function startDownloadView'))
 const cell = (text,href) => ({textContent:text,querySelector:()=>href ? {getAttribute:()=>href} : null});
 const row = (id,name,options={}) => ({hidden:!!options.hidden,getAttribute:()=>null,getClientRects:()=>[{}],querySelectorAll:()=>[cell(name),cell('',options.url || '?ai_download_file_id='+id)]});
 const report = rows => ({querySelectorAll:()=>[{querySelector:()=>({querySelectorAll:()=>[cell('File Name'),cell('Download')]}),querySelectorAll:()=>[{},...rows]}]});
+// APEX renders the sticky header as a separate matching table before the data.
+const dataReport = report(Array.from({length:65},(_,i)=>row(String(i+100),'CFI_'+i+'.pdf')));
+context.report={querySelectorAll:()=>[...report([]).querySelectorAll(),...dataReport.querySelectorAll(),...dataReport.querySelectorAll()]};
+assert.equal(vm.runInContext('collectDisplayedDownloads(report).length',context),65,'Skip header-only tables and deduplicate cloned report rows');
 context.report = report([row('10','a.pdf'),row('10','a.pdf'),row('11','b.docx',{hidden:true}),row('12','c.pdf',{url:'https://other.test/?ai_download_file_id=12'})]);
 assert.equal(vm.runInContext('collectDisplayedDownloads(report).length',context),1);
 context.report=report([row('10','../a.pdf')]);

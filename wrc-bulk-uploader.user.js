@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
 // @namespace    https://westminster.cadetnet.mod.uk/
-// @version      4.21
+// @version      4.22
 // @description  Resource Centre upload, folder, link, bulk edit, and sequential download tools.
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
@@ -31,7 +31,7 @@
     panel.id = 'wrc-download-panel';
     panel.style.cssText = 'position:fixed;bottom:24px;right:24px;width:380px;max-width:calc(100vw - 32px);max-height:80vh;overflow:auto;z-index:2147483646;background:white;color:#222;border:2px solid #0572ce;border-radius:8px;box-shadow:0 6px 24px #0003;font:13px Segoe UI,sans-serif;padding:12px;box-sizing:border-box';
     panel.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.21</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
+      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.22</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
       <div id="wrc-dl-body">
         <h3 style="margin:12px 0 6px">Bulk download</h3>
         <p>Downloads files currently displayed in Manage Documents. Apply your filters and increase rows per page first. Other pages are not included.</p>
@@ -146,6 +146,8 @@
 
   function collectDisplayedDownloads(root) {
     const normalize = text => String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const files = new Map();
+    let reportFound = false;
     for (const table of root.querySelectorAll('table')) {
       const header = table.querySelector('tr');
       if (!header) continue;
@@ -153,7 +155,7 @@
       const filenameIndex = headers.indexOf('file name');
       const downloadIndex = headers.indexOf('download');
       if (filenameIndex < 0 || downloadIndex < 0) continue;
-      const files = new Map();
+      reportFound = true;
       for (const row of Array.from(table.querySelectorAll('tr')).slice(1)) {
         if (row.hidden || row.getAttribute('aria-hidden') === 'true' || row.getClientRects().length === 0) continue;
         const cells = row.querySelectorAll('td,th');
@@ -168,15 +170,15 @@
         }
         files.set(id, { id, name, url: url.href });
       }
-      return Array.from(files.values());
     }
+    if (reportFound) return Array.from(files.values());
     throw new Error('Manage Documents report not found. Show the File Name and Download columns.');
   }
 
 
 
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.21';
+  const SCRIPT_VERSION  = '4.22';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;
