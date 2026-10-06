@@ -1,4 +1,4 @@
-# Toolkit bulk downloads (v4.24)
+# Toolkit bulk downloads (v4.25)
 
 The existing Toolkit now also runs on Manage Documents. On that page it shows only bulk download controls. The upload/home view remains available on the Resource Centre home page. The separate Archivist is not required for this workflow.
 
@@ -17,3 +17,5 @@ The migration master CSV already includes source record IDs and filenames. Its 4
 Source checks use a simulated report and folder API. Live APEX report parsing, authenticated file responses, and the browser's actual folder-write permission still require a small live batch check by the user. If the panel reports no recognized report, check that the two required columns are visible before diagnosing markup changes.
 
 Run the offline checks with `node download-check.cjs`.
+
+Live download protocol confirmed by user Network evidence: the report href alone returns Manage Documents HTML. The working click calls APEX application process DOWNLOAD_DOCUMENT with x01 set to the document ID; JSON returns a temporary Oracle government object-storage URL. v4.25 uses apex.server.process for that authenticated request, then fetches the returned HTTPS URL with credentials omitted and writes the blob to the chosen folder. Temporary URLs are not persisted or logged. The cross-origin storage fetch still requires the storage server to permit browser access; a network/CORS failure stops the batch with an explicit message. Live user verification is pending.
