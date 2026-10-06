@@ -6,12 +6,16 @@ const fragment = source.slice(source.indexOf('  function startDownloadView'), so
 const context = vm.createContext({location:{pathname:'/home',href:'https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/manage-documents',origin:'https://westminster.cadetnet.mod.uk'}, URL, Map, Set, Array, console, setTimeout, clearTimeout, AbortController, Date});
 vm.runInContext(fragment.slice(fragment.indexOf('  function startDownloadView')),context);
 const cell = (text,href) => ({textContent:text,querySelector:()=>href ? {getAttribute:()=>href} : null});
-const row = (id,name,options={}) => ({hidden:!!options.hidden,getAttribute:()=>null,getClientRects:()=>[{}],querySelectorAll:()=>[cell(name),cell('',options.url || '?ai_download_file_id='+id)]});
-const report = rows => ({querySelectorAll:()=>[{querySelector:()=>({querySelectorAll:()=>[cell('File Name'),cell('Download')]}),querySelectorAll:()=>[{},...rows]}]});
+const row = (id,name,options={}) => ({hidden:!!options.hidden,getAttribute:()=>null,getClientRects:()=>[{}],querySelectorAll:()=>[cell(name),cell('',options.url || '?ai_download_file_id='+id),cell(String(options.entries ?? 1))]});
+const report = rows => ({querySelectorAll:()=>[{querySelector:()=>({querySelectorAll:()=>[cell('File Name'),cell('Download'),cell('# Folder Entries')]}),querySelectorAll:()=>[{},...rows]}]});
 // APEX renders the sticky header as a separate matching table before the data.
 const dataReport = report(Array.from({length:65},(_,i)=>row(String(i+100),'CFI_'+i+'.pdf')));
 context.report={querySelectorAll:()=>[...report([]).querySelectorAll(),...dataReport.querySelectorAll(),...dataReport.querySelectorAll()]};
 assert.equal(vm.runInContext('collectDisplayedDownloads(report).length',context),65,'Skip header-only tables and deduplicate cloned report rows');
+context.report=report([row('2532','CFI_22_02_006.pdf',{entries:0}),row('2532','CFI_22_02_006.pdf',{entries:0}),row('42','valid.pdf',{entries:2})]);
+context.skips=[];
+assert.equal(vm.runInContext('collectDisplayedDownloads(report, file => skips.push(file)).length',context),1);
+assert.equal(context.skips.length,1,'Zero-entry documents are skipped once per ID');
 context.report = report([row('10','a.pdf'),row('10','a.pdf'),row('11','b.docx',{hidden:true}),row('12','c.pdf',{url:'https://other.test/?ai_download_file_id=12'})]);
 assert.equal(vm.runInContext('collectDisplayedDownloads(report).length',context),1);
 context.report=report([row('10','../a.pdf')]);
@@ -54,9 +58,13 @@ assert.equal(vm.runInContext('collectDisplayedDownloads(report).length',context)
   let requests=0;
   context.fetch=async()=>{requests++;return {ok:true,redirected:false,async blob(){return {size:50,type:'text/html'}}}};
   await elements['#wrc-dl-start'].onclick();
-  assert.equal(requests,1,'Login HTML must stop the run');
+  assert.equal(requests,2,'Unavailable file HTML must allow the next file');
   assert.equal(saved.length,2,'Login HTML must not be written');
   assert.equal(elements['#wrc-dl-start'].disabled,false);
+  requests=0;
+  context.fetch=async()=>{requests++;return {ok:false,status:429}};
+  await elements['#wrc-dl-start'].onclick();
+  assert.equal(requests,1,'Server throttling still stops the batch');
   context.fetch=async()=>{
     elements['#wrc-dl-stop'].onclick();
     return {ok:true,redirected:false,async blob(){return {size:4,type:'application/pdf'}}};

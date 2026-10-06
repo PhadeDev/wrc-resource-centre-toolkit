@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
 // @namespace    https://westminster.cadetnet.mod.uk/
-// @version      4.22
+// @version      4.23
 // @description  Resource Centre upload, folder, link, bulk edit, and sequential download tools.
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
@@ -31,11 +31,11 @@
     panel.id = 'wrc-download-panel';
     panel.style.cssText = 'position:fixed;bottom:24px;right:24px;width:380px;max-width:calc(100vw - 32px);max-height:80vh;overflow:auto;z-index:2147483646;background:white;color:#222;border:2px solid #0572ce;border-radius:8px;box-shadow:0 6px 24px #0003;font:13px Segoe UI,sans-serif;padding:12px;box-sizing:border-box';
     panel.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.22</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
+      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.23</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
       <div id="wrc-dl-body">
         <h3 style="margin:12px 0 6px">Bulk download</h3>
         <p>Downloads files currently displayed in Manage Documents. Apply your filters and increase rows per page first. Other pages are not included.</p>
-        <p>Original filenames, raw files only. Filename clashes are saved in a document-ID subfolder. Existing files are never overwritten.</p>
+        <p>Rows with zero Folder Entries are skipped. Original filenames, raw files only. Filename clashes are saved in a document-ID subfolder. Existing files are never overwritten.</p>
         <button type="button" id="wrc-dl-folder">Choose download folder</button>
         <p id="wrc-dl-destination">No folder selected.</p>
         <label>Pause between files (seconds): <input id="wrc-dl-delay" type="number" min="1" max="60" value="3" style="width:55px"></label>
@@ -74,9 +74,12 @@
       if (busy) return;
       if (!destination) { status('Choose a download folder first.'); return; }
       let files;
-      try { files = collectDisplayedDownloads(document); }
+      const skipped = [];
+      get('log').replaceChildren();
+      try { files = collectDisplayedDownloads(document, file => skipped.push(file)); }
       catch (error) { status(error.message); return; }
-      if (!files.length) { status('No document download links found in the displayed report.'); return; }
+      for (const file of skipped) log(`SKIPPED: ${file.name} [ID ${file.id}] - zero Folder Entries`);
+      if (!files.length) { status(`No eligible download links found. ${skipped.length} skipped with zero Folder Entries.`); return; }
       const delay = Number(get('delay').value);
       if (!Number.isFinite(delay) || delay < 1 || delay > 60) {
         status('Choose a pause between 1 and 60 seconds.'); return;
@@ -85,7 +88,6 @@
       stopped = false;
       for (const id of ['start', 'folder', 'delay']) get(id).disabled = true;
       get('stop').disabled = false;
-      get('log').replaceChildren();
       let done = 0, failed = 0;
       const counts = new Map();
       for (const file of files) counts.set(file.name.toLowerCase(), (counts.get(file.name.toLowerCase()) || 0) + 1);
@@ -103,7 +105,7 @@
             if (stopped) break;
             if (!blob.size) throw new Error('Empty response');
             // APEX authentication/error pages must never be saved as documents.
-            if (/text\/html|application\/xhtml/i.test(blob.type) && !/\.html?$/i.test(file.name)) throw new Error('Server returned a web page instead of the file. Check your session.');
+            if (/text\/html|application\/xhtml/i.test(blob.type) && !/\.html?$/i.test(file.name)) throw new Error('Server returned a web page instead of the file; file may be unavailable.');
             let folder = destination;
             if (counts.get(file.name.toLowerCase()) > 1 || await downloadFileExists(folder, file.name)) {
               folder = await destination.getDirectoryHandle('WRC-' + file.id, { create: true });
@@ -120,7 +122,7 @@
             failed++;
             log('FAILED: ' + file.name + ' [ID ' + file.id + '] - ' + (error.name === 'AbortError' ? 'Download timed out' : error.message));
             // Do not continue hammering a throttled or unauthorised session.
-            if (/HTTP (401|403|429|503)|Session expired|web page instead/i.test(error.message)) {
+            if (/HTTP (401|403|429|503)|Session expired/i.test(error.message)) {
               stopped = true;
               log('Run stopped. Resolve the session or server issue before trying again.');
             }
@@ -134,7 +136,7 @@
         busy = false;
         for (const id of ['start', 'folder', 'delay']) get(id).disabled = false;
         get('stop').disabled = true;
-        status(`${stopped ? 'Stopped' : 'Finished'}: ${done}/${files.length} saved, ${failed} failed. See results below.`);
+        status(`${stopped ? 'Stopped' : 'Finished'}: ${done}/${files.length} saved, ${failed} failed, ${skipped.length} skipped. See results below.`);
       }
     };
   }
@@ -144,9 +146,10 @@
     catch (error) { if (error.name === 'NotFoundError') return false; throw error; }
   }
 
-  function collectDisplayedDownloads(root) {
+  function collectDisplayedDownloads(root, onSkip = () => {}) {
     const normalize = text => String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
     const files = new Map();
+    const skippedIds = new Set();
     let reportFound = false;
     for (const table of root.querySelectorAll('table')) {
       const header = table.querySelector('tr');
@@ -154,7 +157,9 @@
       const headers = Array.from(header.querySelectorAll('th,td'), cell => normalize(cell.textContent));
       const filenameIndex = headers.indexOf('file name');
       const downloadIndex = headers.indexOf('download');
+      const entriesIndex = headers.findIndex(h => /^#?\s*folder entries$/.test(h));
       if (filenameIndex < 0 || downloadIndex < 0) continue;
+      if (entriesIndex < 0) continue;
       reportFound = true;
       for (const row of Array.from(table.querySelectorAll('tr')).slice(1)) {
         if (row.hidden || row.getAttribute('aria-hidden') === 'true' || row.getClientRects().length === 0) continue;
@@ -165,6 +170,10 @@
         const id = url.searchParams.get('ai_download_file_id') || decodeURIComponent(url.href).match(/ai_download_file_id=(\d+)/i)?.[1];
         if (!id || !/^\d+$/.test(id) || url.origin !== location.origin) continue;
         const name = String(cells[filenameIndex]?.textContent || '').trim();
+        if (/^0$/.test(normalize(cells[entriesIndex]?.textContent))) {
+          if (!skippedIds.has(id)) { skippedIds.add(id); onSkip({ id, name }); }
+          continue;
+        }
         if (!name || /[\\/:*?"<>|\u0000-\u001f]/.test(name) || /[. ]$/.test(name) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) {
           throw new Error('An original filename cannot be saved safely on Windows: ' + (name || '[blank]') + '. No downloads started.');
         }
@@ -172,13 +181,13 @@
       }
     }
     if (reportFound) return Array.from(files.values());
-    throw new Error('Manage Documents report not found. Show the File Name and Download columns.');
+    throw new Error('Manage Documents report not found. Show the File Name, Download and # Folder Entries columns.');
   }
 
 
 
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.22';
+  const SCRIPT_VERSION  = '4.23';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;

@@ -1,14 +1,14 @@
-# Toolkit bulk downloads (v4.21)
+# Toolkit bulk downloads (v4.23)
 
 The existing Toolkit now also runs on Manage Documents. On that page it shows only bulk download controls. The upload/home view remains available on the Resource Centre home page. The separate Archivist is not required for this workflow.
 
 1. Update the Toolkit in Violentmonkey or Tampermonkey, then reload Manage Documents.
-2. Apply the site's filters. Set the report rows per page to include the batch you want. Keep File Name and Download columns visible.
+2. Apply the site's filters. Set the report rows per page to include the batch you want. Keep File Name, Download and # Folder Entries columns visible. Rows with zero Folder Entries are skipped and listed in the results, based on the user's observed broken downloads for these records.
 3. Click **Choose download folder** and select the exact local batch folder in Chrome or Edge. Approve the browser's folder-write prompt.
 4. Set the pause between files if required (default 3 seconds).
 5. Click **Download displayed files**. Keep the page open until it finishes. The results show saved files and failures. **Stop** cancels an active fetch or stops between files; an in-progress disk write finishes.
 
-Only the displayed report rows are included, not other pages or a previously saved scan. Each document ID is fetched once per batch, sequentially. A pause reduces load but does not guarantee the site's monitoring will permit any particular volume. Authentication errors and HTTP 401/403/429/503 stop the run. Requests time out after two minutes.
+Only the displayed report rows are included, not other pages or a previously saved scan. Each document ID is fetched once per batch, sequentially. A pause reduces load but does not guarantee the site's monitoring will permit any particular volume. Explicit sign-in redirects and HTTP 401/403/429/503 stop the run. Other failed files, including unexpected HTML responses, are logged and the batch continues; HTML is not saved as a PDF/document. Requests time out after two minutes. A HTML response alone cannot distinguish a broken file from a login page returned without a sign-in redirect.
 
 Raw files are saved with original filenames. There are no metadata exports. A filename clash is saved under `WRC-<source document ID>/<original filename>` inside your chosen folder; an existing file there is reported as failed rather than overwritten. This also applies to files already present from an earlier batch. No content comparison or automatic resume is performed.
 
