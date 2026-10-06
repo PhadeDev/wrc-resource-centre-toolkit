@@ -1,10 +1,12 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
 // @namespace    https://westminster.cadetnet.mod.uk/
-// @version      4.20
-// @description  Resource Centre upload, folder, link, and bulk edit tools.
+// @version      4.21
+// @description  Resource Centre upload, folder, link, bulk edit, and sequential download tools.
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
+// @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/manage-documents*
+// @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/manage-documents*
 // @grant        none
 // @run-at       document-idle
 // @updateURL    https://raw.githubusercontent.com/PhadeDev/wrc-resource-centre-toolkit/main/wrc-bulk-uploader.user.js
@@ -14,8 +16,167 @@
 (function () {
   'use strict';
 
+  // Manage Documents uses a dedicated view; upload helpers never start here.
+  if (/\/manage-documents\/?$/i.test(location.pathname)) {
+    startDownloadView();
+    return;
+  }
+
+  function startDownloadView() {
+    let destination = null;
+    let busy = false;
+    let stopped = false;
+    let controller = null;
+    const panel = document.createElement('section');
+    panel.id = 'wrc-download-panel';
+    panel.style.cssText = 'position:fixed;bottom:24px;right:24px;width:380px;max-width:calc(100vw - 32px);max-height:80vh;overflow:auto;z-index:2147483646;background:white;color:#222;border:2px solid #0572ce;border-radius:8px;box-shadow:0 6px 24px #0003;font:13px Segoe UI,sans-serif;padding:12px;box-sizing:border-box';
+    panel.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.21</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
+      <div id="wrc-dl-body">
+        <h3 style="margin:12px 0 6px">Bulk download</h3>
+        <p>Downloads files currently displayed in Manage Documents. Apply your filters and increase rows per page first. Other pages are not included.</p>
+        <p>Original filenames, raw files only. Filename clashes are saved in a document-ID subfolder. Existing files are never overwritten.</p>
+        <button type="button" id="wrc-dl-folder">Choose download folder</button>
+        <p id="wrc-dl-destination">No folder selected.</p>
+        <label>Pause between files (seconds): <input id="wrc-dl-delay" type="number" min="1" max="60" value="3" style="width:55px"></label>
+        <div style="display:flex;gap:8px;margin-top:12px"><button type="button" id="wrc-dl-start">Download displayed files</button><button type="button" id="wrc-dl-stop" disabled>Stop</button></div>
+        <p id="wrc-dl-status" role="status" aria-live="polite">Ready.</p>
+        <div id="wrc-dl-log" style="max-height:140px;overflow:auto;font-size:12px;white-space:pre-wrap"></div>
+      </div>`;
+    document.body.appendChild(panel);
+    const get = id => panel.querySelector('#wrc-dl-' + id);
+    const status = message => { get('status').textContent = message; };
+    const log = message => {
+      const row = document.createElement('div');
+      row.textContent = message;
+      get('log').appendChild(row);
+      get('log').scrollTop = get('log').scrollHeight;
+    };
+    get('min').onclick = () => { get('body').hidden = !get('body').hidden; };
+    get('folder').onclick = async () => {
+      if (!window.showDirectoryPicker) {
+        status('Folder saving is unavailable in this browser. Use Chrome or Edge.');
+        return;
+      }
+      try {
+        destination = await window.showDirectoryPicker({ mode: 'readwrite' });
+        get('destination').textContent = 'Folder: ' + destination.name;
+      } catch (error) {
+        if (error.name !== 'AbortError') status('Folder selection failed: ' + error.message);
+      }
+    };
+    get('stop').onclick = () => {
+      stopped = true;
+      controller?.abort();
+      status('Stopping. Any file already being saved will finish.');
+    };
+    get('start').onclick = async () => {
+      if (busy) return;
+      if (!destination) { status('Choose a download folder first.'); return; }
+      let files;
+      try { files = collectDisplayedDownloads(document); }
+      catch (error) { status(error.message); return; }
+      if (!files.length) { status('No document download links found in the displayed report.'); return; }
+      const delay = Number(get('delay').value);
+      if (!Number.isFinite(delay) || delay < 1 || delay > 60) {
+        status('Choose a pause between 1 and 60 seconds.'); return;
+      }
+      busy = true;
+      stopped = false;
+      for (const id of ['start', 'folder', 'delay']) get(id).disabled = true;
+      get('stop').disabled = false;
+      get('log').replaceChildren();
+      let done = 0, failed = 0;
+      const counts = new Map();
+      for (const file of files) counts.set(file.name.toLowerCase(), (counts.get(file.name.toLowerCase()) || 0) + 1);
+      try {
+        for (let i = 0; i < files.length && !stopped; i++) {
+          const file = files[i];
+          status(`Downloading ${i + 1}/${files.length}: ${file.name}`);
+          controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 120000);
+          try {
+            const response = await fetch(file.url, { credentials: 'include', signal: controller.signal });
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            if (response.redirected && /login|signin|sign-in/i.test(response.url)) throw new Error('Session expired. Sign in again.');
+            const blob = await response.blob();
+            if (stopped) break;
+            if (!blob.size) throw new Error('Empty response');
+            // APEX authentication/error pages must never be saved as documents.
+            if (/text\/html|application\/xhtml/i.test(blob.type) && !/\.html?$/i.test(file.name)) throw new Error('Server returned a web page instead of the file. Check your session.');
+            let folder = destination;
+            if (counts.get(file.name.toLowerCase()) > 1 || await downloadFileExists(folder, file.name)) {
+              folder = await destination.getDirectoryHandle('WRC-' + file.id, { create: true });
+            }
+            if (await downloadFileExists(folder, file.name)) throw new Error('File already exists in WRC-' + file.id + '; skipped to avoid overwriting');
+            const handle = await folder.getFileHandle(file.name, { create: true });
+            const writer = await handle.createWritable();
+            try { await writer.write(blob); await writer.close(); }
+            catch (error) { await writer.abort().catch(() => {}); throw error; }
+            done++;
+            log('Saved: ' + (folder === destination ? '' : 'WRC-' + file.id + '/') + file.name);
+          } catch (error) {
+            if (stopped) break;
+            failed++;
+            log('FAILED: ' + file.name + ' [ID ' + file.id + '] - ' + (error.name === 'AbortError' ? 'Download timed out' : error.message));
+            // Do not continue hammering a throttled or unauthorised session.
+            if (/HTTP (401|403|429|503)|Session expired|web page instead/i.test(error.message)) {
+              stopped = true;
+              log('Run stopped. Resolve the session or server issue before trying again.');
+            }
+          } finally { clearTimeout(timeout); controller = null; }
+          if (i < files.length - 1 && !stopped) {
+            const until = Date.now() + delay * 1000;
+            while (!stopped && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 200));
+          }
+        }
+      } finally {
+        busy = false;
+        for (const id of ['start', 'folder', 'delay']) get(id).disabled = false;
+        get('stop').disabled = true;
+        status(`${stopped ? 'Stopped' : 'Finished'}: ${done}/${files.length} saved, ${failed} failed. See results below.`);
+      }
+    };
+  }
+
+  async function downloadFileExists(folder, name) {
+    try { await folder.getFileHandle(name); return true; }
+    catch (error) { if (error.name === 'NotFoundError') return false; throw error; }
+  }
+
+  function collectDisplayedDownloads(root) {
+    const normalize = text => String(text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    for (const table of root.querySelectorAll('table')) {
+      const header = table.querySelector('tr');
+      if (!header) continue;
+      const headers = Array.from(header.querySelectorAll('th,td'), cell => normalize(cell.textContent));
+      const filenameIndex = headers.indexOf('file name');
+      const downloadIndex = headers.indexOf('download');
+      if (filenameIndex < 0 || downloadIndex < 0) continue;
+      const files = new Map();
+      for (const row of Array.from(table.querySelectorAll('tr')).slice(1)) {
+        if (row.hidden || row.getAttribute('aria-hidden') === 'true' || row.getClientRects().length === 0) continue;
+        const cells = row.querySelectorAll('td,th');
+        const link = cells[downloadIndex]?.querySelector('a[href]');
+        if (!link) continue;
+        const url = new URL(link.getAttribute('href'), location.href);
+        const id = url.searchParams.get('ai_download_file_id') || decodeURIComponent(url.href).match(/ai_download_file_id=(\d+)/i)?.[1];
+        if (!id || !/^\d+$/.test(id) || url.origin !== location.origin) continue;
+        const name = String(cells[filenameIndex]?.textContent || '').trim();
+        if (!name || /[\\/:*?"<>|\u0000-\u001f]/.test(name) || /[. ]$/.test(name) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) {
+          throw new Error('An original filename cannot be saved safely on Windows: ' + (name || '[blank]') + '. No downloads started.');
+        }
+        files.set(id, { id, name, url: url.href });
+      }
+      return Array.from(files.values());
+    }
+    throw new Error('Manage Documents report not found. Show the File Name and Download columns.');
+  }
+
+
+
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.20';
+  const SCRIPT_VERSION  = '4.21';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;
