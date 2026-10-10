@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
 // @namespace    https://westminster.cadetnet.mod.uk/
-// @version      4.27
+// @version      4.28
 // @description  Resource Centre upload, folder, link, bulk edit, and sequential download tools.
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
@@ -31,7 +31,7 @@
     panel.id = 'wrc-download-panel';
     panel.style.cssText = 'position:fixed;bottom:24px;right:24px;width:380px;max-width:calc(100vw - 32px);max-height:80vh;overflow:auto;z-index:2147483646;background:white;color:#222;border:2px solid #0572ce;border-radius:8px;box-shadow:0 6px 24px #0003;font:13px Segoe UI,sans-serif;padding:12px;box-sizing:border-box';
     panel.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.27</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
+      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.28</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
       <div id="wrc-dl-body">
         <h3 style="margin:12px 0 6px">Bulk download</h3>
         <p>Downloads files currently displayed in Manage Documents. Apply your filters and increase rows per page first. Other pages are not included.</p>
@@ -210,7 +210,7 @@
     });
   }
 
-  function rememberDownloadFolder(handle) {
+  function rememberDownloadFolder(handle, key = 'last_download_folder') {
     return new Promise((resolve, reject) => {
       const request = indexedDB.open('wrc_toolkit_downloads', 1);
       request.onupgradeneeded = () => request.result.createObjectStore('folders');
@@ -221,7 +221,7 @@
         try {
           const transaction = db.transaction('folders', handle ? 'readwrite' : 'readonly');
           const store = transaction.objectStore('folders');
-          const operation = handle ? store.put(handle, 'last_download_folder') : store.get('last_download_folder');
+          const operation = handle ? store.put(handle, key) : store.get(key);
           operation.onsuccess = () => { result = operation.result; };
           transaction.oncomplete = () => { db.close(); resolve(result); };
           transaction.onabort = transaction.onerror = () => { db.close(); reject(transaction.error || new Error('Folder storage failed')); };
@@ -268,10 +268,101 @@
     throw new Error('Manage Documents report not found. Show the File Name, Download and # Folder Entries columns.');
   }
 
+  function fileNameFromDisposition(header) {
+    const text = String(header || '');
+    const star = text.match(/filename\*\s*=\s*([^']*)'[^']*'([^;]+)/i);
+    if (star) { try { return decodeURIComponent(star[2].trim()); } catch (_) {} }
+    const quoted = text.match(/filename\s*=\s*"((?:[^"\\]|\\.)*)"/i);
+    if (quoted) return quoted[1].replace(/\\(.)/g, '$1').trim();
+    const plain = text.match(/filename\s*=\s*([^;]+)/i);
+    return plain ? plain[1].trim() : '';
+  }
+
+  function fileNameFromStorageUrl(url, id) {
+    try {
+      const path = new URL(url).pathname;
+      const at = path.indexOf('/o/');
+      if (at < 0) return '';
+      const object = decodeURIComponent(path.slice(at + 3));
+      return object.startsWith(id + '-') ? object.slice(id.length + 1) : object;
+    } catch (_) { return ''; }
+  }
+
+  function isSafeWindowsFileName(name) {
+    return !!name && !/[\\/:*?"<>|\u0000-\u001f]/.test(name) && !/[. ]$/.test(name) && !/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name);
+  }
+
+  // Quick download from home page cards. The original file name is only known
+  // once the storage response arrives, so duplicate and existing-file checks
+  // happen after the headers and before the body is read. Stop rules mirror
+  // the Manage Documents loop in startDownloadView; keep them in step.
+  async function saveCardFile(file, destination, controller, seenNames, isStopped) {
+    const storageUrl = await resolveDownloadUrl(file.id, controller.signal);
+    let response;
+    try { response = await fetch(storageUrl, { credentials: 'omit', signal: controller.signal }); }
+    catch (error) {
+      if (error.name === 'AbortError') throw error;
+      throw new Error('Storage fetch failed (network or browser cross-origin restriction). Run stopped.');
+    }
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    if (response.redirected && /login|signin|sign-in/i.test(response.url)) throw new Error('Session expired. Sign in again.');
+    const name = fileNameFromDisposition(response.headers?.get('content-disposition')) || fileNameFromStorageUrl(storageUrl, file.id);
+    if (!name) throw new Error('Could not work out the original file name');
+    if (!isSafeWindowsFileName(name)) throw new Error('Original file name cannot be saved safely on Windows: ' + name);
+    const key = name.toLowerCase();
+    if (seenNames.has(key)) { controller.abort(); return { skipped: 'duplicate filename', name }; }
+    seenNames.add(key);
+    if (await downloadFileExists(destination, name)) { controller.abort(); return { skipped: 'file already exists', name }; }
+    const blob = await response.blob();
+    if (isStopped()) return { stopped: true, name };
+    if (!blob.size) throw new Error('Empty response');
+    if (/text\/html|application\/xhtml/i.test(blob.type) && !/\.html?$/i.test(name)) throw new Error('Server returned a web page instead of the file; file may be unavailable.');
+    if (await downloadFileExists(destination, name)) throw new Error('File already exists: ' + name + '; skipped to avoid overwriting');
+    const handle = await destination.getFileHandle(name, { create: true });
+    const writer = await handle.createWritable();
+    try { await writer.write(blob); await writer.close(); }
+    catch (error) { await writer.abort().catch(() => {}); throw error; }
+    return { saved: true, name };
+  }
+
+  async function downloadCardFiles(files, destination, delaySeconds, hooks) {
+    const { log, status, isStopped, setController } = hooks;
+    const result = { done: 0, failed: 0, skipped: 0, stopped: false };
+    const seenNames = new Set();
+    let halted = false;
+    for (let i = 0; i < files.length && !halted && !isStopped(); i++) {
+      const file = files[i];
+      status(`Downloading ${i + 1}/${files.length}: ${file.title}`);
+      const controller = new AbortController();
+      setController(controller);
+      const timeout = setTimeout(() => controller.abort(), 120000);
+      try {
+        const outcome = await saveCardFile(file, destination, controller, seenNames, isStopped);
+        if (outcome.stopped) break;
+        if (outcome.skipped) { result.skipped++; log(`SKIPPED: ${outcome.name} [ID ${file.id}] - ${outcome.skipped}`); }
+        else { result.done++; log('Saved: ' + outcome.name); }
+      } catch (error) {
+        if (isStopped()) break;
+        result.failed++;
+        log(`FAILED: ${file.title} [ID ${file.id}] - ` + (error.name === 'AbortError' ? 'Download timed out' : error.message));
+        if (/HTTP (401|403|429|503)|Session expired|Storage fetch failed|APEX download helper unavailable/i.test(error.message)) {
+          halted = true;
+          log('Run stopped. Resolve the session or server issue before trying again.');
+        }
+      } finally { clearTimeout(timeout); setController(null); }
+      if (i < files.length - 1 && !halted && !isStopped()) {
+        const until = Date.now() + delaySeconds * 1000;
+        while (!isStopped() && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 200));
+      }
+    }
+    result.stopped = halted || isStopped();
+    return result;
+  }
+
 
 
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.27';
+  const SCRIPT_VERSION  = '4.28';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;
@@ -340,7 +431,7 @@
     }
     #wrc-body label { display:block; font-weight:600; margin:8px 0 3px; font-size:12px; }
     #wrc-tabs {
-      display:grid; grid-template-columns:repeat(4, 1fr); gap:4px;
+      display:grid; grid-template-columns:repeat(5, 1fr); gap:4px;
       padding:8px; border-bottom:1px solid #d8d8d8; background:#f6f8fa;
     }
     .wrc-tab {
@@ -475,6 +566,7 @@
       <button class="wrc-tab" type="button" data-tab="folders">Folders</button>
       <button class="wrc-tab" type="button" data-tab="links">Links</button>
       <button class="wrc-tab" type="button" data-tab="bulk">Bulk Edit</button>
+      <button class="wrc-tab" type="button" data-tab="download">Download</button>
     </div>
     <div id="wrc-body">
 
@@ -553,6 +645,22 @@
           <button class="wrc-btn wrc-btn-danger" id="wrc-btn-bulk-stop" disabled>Stop</button>
         </div>
         <div id="wrc-bulk-status">Scan folders first if the dropdown is empty.</div>
+      </div>
+
+      <div class="wrc-pane" data-pane="download">
+        <label>Quick Download</label>
+        <div style="font-size:11px;color:#666;margin-bottom:5px">
+          Choose from the document cards currently shown on this page and save the files to a folder. External Link cards have no file and are skipped. Original file names; duplicate names and existing files are skipped, never overwritten.
+        </div>
+        <div id="wrc-cdl-folder-name" style="border:1px solid #d0d7de;border-radius:4px;padding:7px 8px;background:#f6f8fa;font-size:12px;overflow-wrap:anywhere">No folder selected.</div>
+        <label style="font-weight:400">Pause between files (seconds): <input id="wrc-cdl-delay" type="number" min="1" max="60" value="3" style="width:50px"></label>
+        <div class="wrc-row">
+          <button class="wrc-btn wrc-btn-grey" id="wrc-btn-cdl-folder">Choose Folder</button>
+          <button class="wrc-btn wrc-btn-primary" id="wrc-btn-cdl-choose">Choose Documents</button>
+          <button class="wrc-btn wrc-btn-danger" id="wrc-btn-cdl-stop" disabled>Stop</button>
+        </div>
+        <div id="wrc-cdl-status" role="status" aria-live="polite" style="font-size:11px;margin-top:5px;color:#666">Ready.</div>
+        <div id="wrc-cdl-log" style="max-height:140px;overflow:auto;font-size:11px;white-space:pre-wrap;margin-top:4px"></div>
       </div>
 
       <div id="wrc-log"></div>
@@ -2406,6 +2514,175 @@
     elProgressLbl.textContent = 'Ready';
     dirHandle = null;
     _openedPopups = [];
+  });
+
+  // ── Quick download of visible document cards ──────────────────────────────
+  const CARD_FOLDER_KEY = 'last_card_download_folder';
+  const elCdlFolder = $('wrc-cdl-folder-name');
+  const elCdlStatus = $('wrc-cdl-status');
+  const elCdlLog = $('wrc-cdl-log');
+  const elCdlDelay = $('wrc-cdl-delay');
+  const btnCdlFolder = $('wrc-btn-cdl-folder');
+  const btnCdlChoose = $('wrc-btn-cdl-choose');
+  const btnCdlStop = $('wrc-btn-cdl-stop');
+  let cardDlFolder = null;
+  let cardDlBusy = false;
+  let cardDlStopped = false;
+  let cardDlController = null;
+
+  const cdlStatus = msg => { elCdlStatus.textContent = msg; };
+  const cdlLog = msg => {
+    const row = document.createElement('div');
+    row.textContent = msg;
+    elCdlLog.appendChild(row);
+    elCdlLog.scrollTop = elCdlLog.scrollHeight;
+  };
+
+  function collectCardDownloads(root) {
+    const seen = new Set();
+    const rows = [];
+    for (const link of root.querySelectorAll('a[href*="ai_download_file_id"]')) {
+      let url;
+      try { url = new URL(link.getAttribute('href'), location.href); } catch (_) { continue; }
+      const id = url.searchParams.get('ai_download_file_id') || '';
+      if (!/^\d+$/.test(id) || url.origin !== location.origin || seen.has(id)) continue;
+      const card = cardContainerForLink(link);
+      if (!card || card.hidden || card.getClientRects().length === 0) continue;
+      seen.add(id);
+      rows.push({ id, title: titleForCard(card, id) });
+    }
+    return rows;
+  }
+
+  rememberDownloadFolder(undefined, CARD_FOLDER_KEY).then(saved => {
+    if (saved?.kind === 'directory') {
+      cardDlFolder = saved;
+      elCdlFolder.textContent = 'Remembered folder: ' + saved.name;
+      cdlStatus('Last quick-download folder restored. You may be asked to approve access when you download.');
+    }
+  }).catch(() => { cdlStatus('Folder memory unavailable. Choose a folder for this session.'); });
+
+  btnCdlFolder.addEventListener('click', async () => {
+    if (cardDlBusy) return;
+    if (!window.showDirectoryPicker) {
+      cdlStatus('Folder saving is unavailable in this browser. Use Chrome or Edge.');
+      return;
+    }
+    try {
+      cardDlFolder = await window.showDirectoryPicker({ mode: 'readwrite' });
+      elCdlFolder.textContent = 'Folder: ' + cardDlFolder.name;
+      try { await rememberDownloadFolder(cardDlFolder, CARD_FOLDER_KEY); }
+      catch (_) { cdlStatus('Folder selected, but could not remember it for the next refresh.'); }
+    } catch (error) {
+      if (error.name !== 'AbortError') cdlStatus('Folder selection failed: ' + error.message);
+    }
+  });
+
+  btnCdlStop.addEventListener('click', () => {
+    cardDlStopped = true;
+    cardDlController?.abort();
+    cdlStatus('Stopping. Any file already being saved will finish.');
+  });
+
+  async function startCardDownload(files) {
+    if (cardDlBusy) return;
+    const delay = Number(elCdlDelay.value);
+    if (!Number.isFinite(delay) || delay < 1 || delay > 60) { cdlStatus('Choose a pause between 1 and 60 seconds.'); return; }
+    if (cardDlFolder.queryPermission) {
+      try {
+        let permission = await cardDlFolder.queryPermission({ mode: 'readwrite' });
+        if (permission !== 'granted') permission = await cardDlFolder.requestPermission({ mode: 'readwrite' });
+        if (permission !== 'granted') { cdlStatus('Folder access was not granted. Allow access or choose another folder.'); return; }
+      } catch (error) { cdlStatus('Cannot access the remembered folder. Choose it again: ' + error.message); return; }
+    }
+    cardDlBusy = true;
+    cardDlStopped = false;
+    btnCdlChoose.disabled = btnCdlFolder.disabled = elCdlDelay.disabled = true;
+    btnCdlStop.disabled = false;
+    elCdlLog.replaceChildren();
+    try {
+      const result = await downloadCardFiles(files, cardDlFolder, delay, {
+        log: cdlLog,
+        status: cdlStatus,
+        isStopped: () => cardDlStopped,
+        setController: controller => { cardDlController = controller; }
+      });
+      cdlStatus(`${result.stopped ? 'Stopped' : 'Finished'}: ${result.done}/${files.length} saved, ${result.failed} failed, ${result.skipped} skipped. See results below.`);
+    } catch (error) {
+      cdlStatus('Download stopped unexpectedly: ' + error.message);
+    } finally {
+      cardDlBusy = false;
+      btnCdlChoose.disabled = btnCdlFolder.disabled = elCdlDelay.disabled = false;
+      btnCdlStop.disabled = true;
+    }
+  }
+
+  function openDownloadChooser(rows) {
+    closeLinkChooser();
+
+    const modal = document.createElement('div');
+    modal.id = 'wrc-link-modal';
+    modal.innerHTML = `
+      <div id="wrc-link-dialog" role="dialog" aria-modal="true" aria-label="Choose documents to download">
+        <div id="wrc-link-head">
+          <span>Choose Documents to Download</span>
+          <button type="button" id="wrc-link-x">×</button>
+        </div>
+        <div id="wrc-link-tools">
+          <button class="wrc-btn wrc-btn-grey" type="button" id="wrc-link-all">Select All</button>
+          <button class="wrc-btn wrc-btn-grey" type="button" id="wrc-link-none">Select None</button>
+          <span id="wrc-link-count"></span>
+        </div>
+        <div id="wrc-link-list"></div>
+        <div id="wrc-link-foot">
+          <button class="wrc-btn wrc-btn-grey" type="button" id="wrc-link-cancel">Close</button>
+          <button class="wrc-btn wrc-btn-success" type="button" id="wrc-dlc-go">Download Selected</button>
+        </div>
+      </div>
+    `;
+
+    const list = modal.querySelector('#wrc-link-list');
+    rows.forEach((row, i) => {
+      const label = document.createElement('label');
+      label.className = 'wrc-link-choice';
+      label.innerHTML = `
+        <input class="wrc-link-check" type="checkbox" checked data-index="${i}">
+        <span><span class="wrc-link-title">${esc(row.title)}</span></span>
+      `;
+      list.appendChild(label);
+    });
+
+    modal.querySelector('#wrc-link-x').addEventListener('click', closeLinkChooser);
+    modal.querySelector('#wrc-link-cancel').addEventListener('click', closeLinkChooser);
+    modal.addEventListener('click', e => { if (e.target === modal) closeLinkChooser(); });
+    modal.querySelector('#wrc-link-all').addEventListener('click', () => {
+      modal.querySelectorAll('.wrc-link-check').forEach(cb => { cb.checked = true; });
+      updateLinkCount(modal, rows);
+    });
+    modal.querySelector('#wrc-link-none').addEventListener('click', () => {
+      modal.querySelectorAll('.wrc-link-check').forEach(cb => { cb.checked = false; });
+      updateLinkCount(modal, rows);
+    });
+    modal.querySelectorAll('.wrc-link-check').forEach(cb => {
+      cb.addEventListener('change', () => updateLinkCount(modal, rows));
+    });
+    modal.querySelector('#wrc-dlc-go').addEventListener('click', () => {
+      const selected = selectedLinkRows(modal, rows);
+      if (!selected.length) { cdlStatus('No documents selected.'); return; }
+      closeLinkChooser();
+      startCardDownload(selected);
+    });
+
+    document.body.appendChild(modal);
+    updateLinkCount(modal, rows);
+  }
+
+  btnCdlChoose.addEventListener('click', () => {
+    if (cardDlBusy) return;
+    if (!cardDlFolder) { cdlStatus('Choose a download folder first.'); return; }
+    const rows = collectCardDownloads(document);
+    if (!rows.length) { cdlStatus('No downloadable document cards found on this page.'); return; }
+    openDownloadChooser(rows);
   });
 
   // ── Restore state ──────────────────────────────────────────────────────────

@@ -1,4 +1,6 @@
-# Toolkit bulk downloads (v4.27)
+# Toolkit bulk downloads (v4.28)
+
+Two entry points share the same protocol: the Manage Documents batch panel (below) and, from v4.28, a **Download** tab on the Resource Centre home page for quick downloads from the document cards you can see. See "Quick download from home cards" at the end.
 
 The existing Toolkit now also runs on Manage Documents. On that page it shows only bulk download controls. The upload/home view remains available on the Resource Centre home page. The separate Archivist is not required for this workflow.
 
@@ -19,3 +21,11 @@ Source checks use a simulated report and folder API. Live APEX report parsing, a
 Run the offline checks with `node download-check.cjs`.
 
 Live download protocol confirmed by user Network evidence: the report href alone returns Manage Documents HTML. The working click calls APEX application process DOWNLOAD_DOCUMENT with x01 set to the document ID; JSON returns a temporary Oracle government object-storage URL. v4.25 uses apex.server.process for that authenticated request, then fetches the returned HTTPS URL with credentials omitted and writes the blob to the chosen folder. Temporary URLs are not persisted or logged. The cross-origin storage fetch still requires the storage server to permit browser access; a network/CORS failure stops the batch with an explicit message. User confirmed the v4.25 download protocol works live; v4.27 duplicate skipping still needs user verification.
+
+## Quick download from home cards (v4.28)
+
+On the Resource Centre home page the toolkit panel has a **Download** tab. Choose a folder (Chrome or Edge), click **Choose Documents**, untick anything you do not want, then **Download Selected**. Only cards currently shown on the page are offered; External Link cards have no file and never appear. The quick-download folder is remembered separately from the Manage Documents folder, so a quick save cannot change where a batch goes.
+
+The card links carry only a document ID (a plain fetch of them returns a web page), so the tab uses the same APEX DOWNLOAD_DOCUMENT process as Manage Documents. Cards show a Display Name, not the original file name, so the original name is read from the storage response Content-Disposition header (live-confirmed 10/10/2026), falling back to the storage object name with its leading document-ID prefix removed. Because that name is only known after the response headers arrive, duplicate-name and existing-file skips happen then, before the file body is read. The first card for a name is kept; later same-name cards are skipped. Nothing is overwritten and no subfolders or suffixes are created. The stop rules, pause, timeout and HTML guard match Manage Documents.
+
+Run the offline checks with `node download-cards-check.cjs`. Live use on the home page (process call from cards, folder picker, real downloads) still needs a small live check by the user.
