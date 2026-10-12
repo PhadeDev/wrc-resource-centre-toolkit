@@ -69,6 +69,13 @@ for (const bad of ['..','CON','bad/name','trailing.']) {
     const actual=context.planMappedDownloads(report,real,root);
     assert.equal(actual.matched,1362); assert.equal(actual.files.length,1350); assert.equal(actual.missing,0);
     assert(actual.files.every(file=>file.paths.every(path=>path[0]==='Army Cadet Syllabus 21 (ACS21)')));
+    const selection={rules:new Map(real.folders.filter(path=>!path.includes(' > ')).map(path=>[path,true]))};
+    const all=context.planMappedDownloads(report,real,selection);
+    assert.equal(all.matched,3033);assert.equal(all.files.length,2992);assert.equal(all.copies,3734);
+    context.setDownloadFolderSelection(selection,root,false);
+    const excluded=context.planMappedDownloads(report,real,selection);
+    assert(excluded.files.every(file=>file.paths.every(parts=>!parts.join(' > ').startsWith(root))), 'Select all minus ACS21 creates no copies in excluded tree');
+    console.log(`Select all: ${real.folders.length} folders, ${all.files.length} files, ${all.copies} copies; ACS21 exclusion verified.`);
     console.log(`Supplied CSVs: ${actual.matched} matching IDs, ${actual.files.length} unique filenames, ${actual.copies} folder copies, ${actual.missing} missing IDs.`);
   }
   console.log('Mapping checks passed: CSV, exact ID selection, subfolders, multi-folder copies, duplicate unions, existing files, Stop, permissions, failed writes.');

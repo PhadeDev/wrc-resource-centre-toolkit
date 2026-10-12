@@ -32,7 +32,7 @@ assert.equal(vm.runInContext('collectDisplayedDownloads(report).length',context)
   await assert.rejects(vm.runInContext("downloadFileExists(folder,'a.pdf')",context),{name:'NotAllowedError'});
   const elements={};
   const clicked=[];
-  const element=()=>({style:{},textContent:'',disabled:false,value:'1',children:[],click(){clicked.push(this)},appendChild(item){this.children.push(item)},replaceChildren(){this.children=[]}});
+  const element=()=>({style:{},textContent:'',disabled:false,value:'1',children:[],setAttribute(key,value){this[key]=value},click(){clicked.push(this)},appendChild(item){this.children.push(item)},replaceChildren(){this.children=[]}});
   const preferences=new Map();
   context.localStorage={getItem:key=>preferences.get(key),setItem:(key,value)=>preferences.set(key,value)};
   const saved=[];
@@ -115,11 +115,36 @@ assert.equal(vm.runInContext('collectDisplayedDownloads(report).length',context)
   const csv='Select,Display Name,Folder Path\n30,Example,Training > Army Cadet Syllabus 21 (ACS21) > One:Training > Army Cadet Syllabus 21 (ACS21) > Two\n31,Unrelated,Other > One\n32,Missing,Training > Army Cadet Syllabus 21 (ACS21) > Three';
   elements['#wrc-dl-metadata'].files=[{text:async()=>csv}];
   await elements['#wrc-dl-metadata'].onchange();
-  assert.equal(elements['#wrc-dl-tree'].value,'Training > Army Cadet Syllabus 21 (ACS21)');
+  assert.match(elements['#wrc-dl-tree'].textContent,/4 folders selected/);
+  elements['#wrc-dl-tree'].onclick();
+  assert.equal(elements['#wrc-dl-picker'].hidden,false);
+  elements['#wrc-dl-picker-done'].onclick();
+  assert.equal(elements['#wrc-dl-picker'].hidden,true);
   context.report=report([row('30','mapped.pdf'),row('31','unrelated.pdf')]);
   elements['#wrc-dl-preview'].onclick();
   assert.match(elements['#wrc-dl-status'].textContent,/1 matching displayed records; 1 files to fetch; 2 folder copies; 1 mapped IDs/);
   assert.equal(requests,0,'Preview must never fetch');
+  const folderCheck = path => {
+    const walk = node => {
+      if (node.children?.[1]?.title === path) return node.children[0];
+      for (const child of node.children || []) { const found = walk(child); if (found) return found; }
+    };
+    return walk(elements['#wrc-dl-folder-list']);
+  };
+  let checkbox = folderCheck('Training > Army Cadet Syllabus 21 (ACS21) > Two');
+  checkbox.checked = false; checkbox.onchange();
+  assert.equal(folderCheck('Training > Army Cadet Syllabus 21 (ACS21)').indeterminate,true,'Excluded branch makes parent mixed');
+  elements['#wrc-dl-search'].value='Three';elements['#wrc-dl-search'].oninput();
+  assert.equal(folderCheck('Training > Army Cadet Syllabus 21 (ACS21) > Two'),undefined,'Search hides unmatched branch');
+  elements['#wrc-dl-preview'].onclick();
+  assert.match(elements['#wrc-dl-status'].textContent,/1 files to fetch; 1 folder copies/,'Search does not reselect hidden excluded folders');
+  elements['#wrc-dl-all'].onclick();
+  elements['#wrc-dl-preview'].onclick();
+  assert.match(elements['#wrc-dl-status'].textContent,/2 files to fetch; 3 folder copies/,'Select all applies beyond current search');
+  elements['#wrc-dl-none'].onclick();
+  elements['#wrc-dl-preview'].onclick();
+  assert.match(elements['#wrc-dl-status'].textContent,/Choose a mapped folder/,'Empty selection cannot download everything accidentally');
+  await elements['#wrc-dl-metadata'].onchange();
   const beforeIds=resolvedIds.length;
   context.fetch=async()=>{requests++;return {ok:true,redirected:false,async blob(){return {size:4,type:'application/pdf'}}}};
   await elements['#wrc-dl-start'].onclick();

@@ -1,4 +1,16 @@
-# Toolkit bulk downloads (v4.31)
+# Toolkit bulk downloads (v4.32)
+
+## Searchable multi-folder picker (v4.32)
+
+Load the bulk metadata CSV, then click **Resource Centre folders** to browse its expandable tree. Tick a parent to include that folder and all descendants. Untick a branch to exclude it; you can tick a deeper descendant to include it again. Partly selected parents show a mixed checkbox. Reticking a parent selects its whole branch and clears earlier descendant exceptions.
+
+Search matches folder names or full paths and shows matching branches with their ancestors. It only changes visibility, never the selection. **Select all** and **Clear all** apply to the entire mapping, including folders hidden by search. **Done** closes the picker; changes apply immediately. No folders selected blocks mapped downloads. Folder controls are disabled during a run. Selections and CSV data last for the page session; reloading restores the ACS21 default when available.
+
+Use **Scan / preview** before downloading to see file counts, folder-copy counts and exact relative destinations. Only the currently displayed eligible Manage Documents rows can download, even with Select all. A document assigned to both an excluded folder and an included folder still gets its copy in the included folder. Every excluded assignment is omitted.
+
+One selected root retains its own folder name, preserving the existing ACS21 archive layout. Multiple roots omit their shared parent ancestry, retaining enough hierarchy to distinguish their paths. For example, `Top > A` and `Top > B` produce `A/...` and `B/...`; roots under different top-level trees retain those top-level names. Select all retains complete mapped paths. Changing the set of selected roots can change relative destinations, so review the preview and choose the appropriate local root before proceeding; resume checks apply to those exact paths, without moving existing files. Excluding descendants within the same selected root preserves its original layout.
+
+Offline verification includes `download-folder-picker-check.cjs` for exclusions, re-inclusions, multiple roots, shared assignments and all/none, plus `download-check.cjs` for picker interaction, mixed checkboxes, search preserving exclusions and global select-all under search. Live visual/browser interaction still needs user confirmation.
 
 ## Resume, results and Windows recovery (v4.31)
 

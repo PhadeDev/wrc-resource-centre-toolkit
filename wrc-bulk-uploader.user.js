@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
 // @namespace    https://westminster.cadetnet.mod.uk/
-// @version      4.31
-// @description  Resource Centre upload, folder, link, bulk edit, and sequential download tools.
+// @version      4.32
+// @description  Resource Centre upload, folder, link, bulk edit, and mapped bulk download tools.
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/manage-documents*
@@ -31,6 +31,8 @@
     const events = [];
     let runId = null;
     let metadata = null;
+    let folderSelection = null;
+    const expandedFolders = new Set();
     let manifest = null;
     let view = 'all';
     const results = [];
@@ -42,15 +44,22 @@
     style.textContent = '#wrc-download-panel{border:1px solid #d6dce6!important;padding:0!important;border-radius:14px!important;box-shadow:0 12px 45px #182b4930!important}#wrc-download-panel strong{font-size:14px}#wrc-download-panel>div:first-child{padding:14px 18px;background:#f3f6fb;border-bottom:1px solid #e0e5ed}#wrc-dl-body{padding:0 18px 16px}#wrc-download-panel p{line-height:1.5;color:#536175}#wrc-download-panel button{padding:7px 10px;border:1px solid #ccd5e2;border-radius:7px;background:#f8fafc;color:#253751;cursor:pointer}#wrc-download-panel button:disabled{opacity:.45;cursor:default}#wrc-dl-start{background:#165bd4!important;color:white!important;border-color:#165bd4!important}#wrc-download-panel input,#wrc-download-panel select{box-sizing:border-box;padding:6px;border:1px solid #cbd5e1;border-radius:6px;max-width:100%}#wrc-dl-status{background:#edf3ff;padding:10px;border-radius:8px;color:#214776!important}#wrc-dl-log{border:1px solid #e1e7ef;border-radius:8px;padding:8px;overflow-wrap:anywhere;white-space:pre-wrap}#wrc-dl-log>div{padding:6px 0;border-bottom:1px solid #edf0f5}';
     document.body.appendChild(style);
     panel.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.31</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
+      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.32</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
       <div id="wrc-dl-body">
         <h3 style="margin:12px 0 6px">Bulk download</h3>
         <p>Downloads files currently displayed in Manage Documents. Apply your filters and increase rows per page first. Other pages are not included.</p>
         <p>Resume skips non-empty completed copies. Missing and empty files are retried. Original filenames and folder assignments are preserved.</p>
         <label>Optional folder mapping CSV: <input id="wrc-dl-metadata" type="file" accept=".csv,text/csv"></label>
-        <p><label>Resource Centre folder: <select id="wrc-dl-tree" disabled style="width:100%"><option value="">No mapping loaded (flat download)</option></select></label></p>
+        <p>Resource Centre folders:<br><button type="button" id="wrc-dl-tree" disabled style="width:100%;text-align:left">No mapping loaded (flat download)</button></p>
+        <fieldset id="wrc-dl-picker" hidden style="border:1px solid #dbe3ee;border-radius:10px;margin:0 0 12px;padding:10px">
+          <legend>Choose folders</legend>
+          <input id="wrc-dl-search" type="search" placeholder="Search folder names or paths" aria-label="Search Resource Centre folders" style="width:100%">
+          <div style="display:flex;gap:6px;margin:8px 0"><button type="button" id="wrc-dl-all">Select all</button><button type="button" id="wrc-dl-none">Clear all</button><button type="button" id="wrc-dl-picker-done">Done</button></div>
+          <div id="wrc-dl-folder-list" role="group" aria-label="Folder tree" style="max-height:260px;overflow:auto"></div>
+          <p id="wrc-dl-selection" role="status" style="margin:8px 0 0"></p>
+        </fieldset>
         <button type="button" id="wrc-dl-preview">Scan / preview</button>
-        <p>With a mapping loaded, only the selected folder and its subfolders are included. Each file is copied to every matching folder beneath your chosen download folder.</p>
+        <p>Select a parent to include its subfolders, then untick branches to exclude them. Search only changes what you see. Scan / preview shows the final paths under your download folder. Only displayed documents are included.</p>
         <button type="button" id="wrc-dl-folder">Choose download folder</button>
         <p id="wrc-dl-destination">No folder selected.</p>
         <p><label>Concurrent downloads: <input id="wrc-dl-concurrency" type="number" min="1" max="8" step="1" value="1" style="width:55px"></label></p>
@@ -131,20 +140,75 @@
       link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
     get('min').onclick = () => { get('body').hidden = !get('body').hidden; };
+    const renderFolders = (focusPath = null, focusType = 'check') => {
+      get('folder-list').replaceChildren();
+      if (!metadata || !folderSelection) return;
+      const query = get('search').value.trim().toLowerCase();
+      const states = downloadFolderStates(metadata.folders, folderSelection);
+      const matches = new Set(metadata.folders.filter(path => path.toLowerCase().includes(query)));
+      const visible = new Set(matches);
+      for (const path of matches) {
+        const parts = path.split(' > ');
+        for (let n = 1; n < parts.length; n++) visible.add(parts.slice(0, n).join(' > '));
+      }
+      const containers = new Map([['', get('folder-list')]]);
+      let focusControl = null;
+      for (const path of metadata.folders) {
+        if (!visible.has(path)) continue;
+        const parts = path.split(' > '), parent = parts.slice(0, -1).join(' > ');
+        if (!query && parent && !expandedFolders.has(parent)) continue;
+        const row = document.createElement('div');
+        row.style.cssText = 'padding:4px 0;display:flex;align-items:center;gap:5px;min-width:0';
+        const hasChildren = states.get(path).children > 0;
+        const expand = document.createElement('button');
+        expand.type = 'button'; expand.textContent = hasChildren ? (query || expandedFolders.has(path) ? '▾' : '▸') : '·';
+        expand.style.cssText = 'padding:0;width:22px;flex:none;border:0;background:transparent';
+        expand.disabled = !hasChildren || !!query;
+        expand.setAttribute('aria-label', 'Expand or collapse ' + parts.at(-1));
+        expand.setAttribute('aria-expanded', String(!!query || expandedFolders.has(path)));
+        expand.onclick = () => { expandedFolders.has(path) ? expandedFolders.delete(path) : expandedFolders.add(path); renderFolders(path, 'expand'); };
+        const label = document.createElement('label');
+        label.style.cssText = 'display:flex;align-items:center;gap:6px;overflow-wrap:anywhere;cursor:pointer';
+        const check = document.createElement('input'); check.type = 'checkbox';
+        check.checked = states.get(path).checked; check.indeterminate = states.get(path).mixed;
+        check.onchange = () => { setDownloadFolderSelection(folderSelection, path, check.checked); renderFolders(path); };
+        if (path === focusPath) focusControl = focusType === 'expand' ? expand : check;
+        const name = document.createElement('span'); name.textContent = parts.at(-1); name.title = path;
+        label.appendChild(check); label.appendChild(name); row.appendChild(expand); row.appendChild(label);
+        const container = containers.get(parent);
+        if (!container) continue;
+        container.appendChild(row);
+        const children = document.createElement('div'); children.style.marginLeft = '16px';
+        container.appendChild(children); containers.set(path, children);
+      }
+      const count = metadata.folders.filter(path => downloadFolderSelected(path, folderSelection)).length;
+      get('tree').textContent = count ? `${count} folders selected · Browse / change` : 'No folders selected · Browse / change';
+      get('selection').textContent = `${count} of ${metadata.folders.length} folders selected. ${query ? matches.size + ' search matches. ' : ''}Selections apply immediately; use Scan / preview to check files.`;
+      if (query && !matches.size) get('folder-list').textContent = 'No matching folders.';
+      focusControl?.focus?.({ preventScroll: true });
+    };
+    get('tree').onclick = () => { get('picker').hidden = !get('picker').hidden; };
+    get('picker-done').onclick = () => { get('picker').hidden = true; };
+    get('search').value = '';
+    get('search').oninput = renderFolders;
+    get('all').onclick = () => { folderSelection.rules.clear(); for (const path of metadata.folders.filter(path => !path.includes(' > '))) folderSelection.rules.set(path, true); renderFolders(); };
+    get('none').onclick = () => { folderSelection.rules.clear(); renderFolders(); };
     get('metadata').onchange = async () => {
       metadata = null;
-      get('tree').replaceChildren();
+      folderSelection = null;
+      expandedFolders.clear();
+      get('folder-list').replaceChildren(); get('picker').hidden = true; get('search').value = '';
+      get('tree').textContent = 'No mapping loaded (flat download)';
       get('tree').disabled = true;
       const file = get('metadata').files?.[0];
       if (!file) { status('No mapping loaded. Downloads will use the flat folder.'); return; }
       try {
         metadata = parseDownloadMetadata(await file.text());
-        for (const path of metadata.folders) {
-          const option = document.createElement('option');
-          option.value = option.textContent = path;
-          get('tree').appendChild(option);
-        }
-        get('tree').value = metadata.folders.find(path => path.endsWith(' > Army Cadet Syllabus 21 (ACS21)')) || metadata.folders[0];
+        const initial = metadata.folders.find(path => path.endsWith(' > Army Cadet Syllabus 21 (ACS21)')) || metadata.folders[0];
+        folderSelection = { rules: new Map([[initial, true]]) };
+        const parts = initial.split(' > ');
+        for (let n = 1; n <= parts.length; n++) expandedFolders.add(parts.slice(0, n).join(' > '));
+        renderFolders();
         get('tree').disabled = false;
         status(`Loaded ${metadata.records.size} document IDs. Choose a folder, then Scan / preview.`);
       } catch (error) { metadata = null; status('Mapping could not be loaded: ' + error.message); }
@@ -153,7 +217,7 @@
       if (get('metadata').files?.length && !metadata) throw new Error('Load a valid metadata CSV before downloading, or clear the file selection for a flat download.');
       const skipped = [];
       const displayed = collectDisplayedDownloads(document, file => skipped.push(file));
-      const plan = planMappedDownloads(displayed, metadata, get('tree').value);
+      const plan = planMappedDownloads(displayed, metadata, folderSelection);
       return { ...plan, skipped };
     };
     get('preview').onclick = () => {
@@ -224,7 +288,7 @@
       busy = true;
       stopped = false;
       runReason = '';
-      for (const id of ['start', 'folder', 'metadata', 'tree', 'preview']) get(id).disabled = true;
+      for (const id of ['start', 'folder', 'metadata', 'tree', 'picker', 'preview']) get(id).disabled = true;
       get('stop').disabled = false;
       let done = 0, failed = 0, attempted = 0, staged = 0, savedCopies = 0, consecutiveFailures = 0, downloadedBytes = 0;
       const totalFiles = files.length;
@@ -322,6 +386,7 @@
         busy = false;
         for (const id of ['start', 'folder', 'delay', 'metadata', 'preview']) get(id).disabled = false;
         get('tree').disabled = !metadata;
+        get('picker').disabled = false;
         get('stop').disabled = true;
         record('run_finished', { attempted, done, failed, staged, skipped: skipped.length, savedCopies, downloadedBytes, stopped, reason: runReason || 'complete', elapsedMs: Date.now() - startedAt });
         status(`${stopped ? 'Stopped' : 'Finished'}: ${attempted}/${totalFiles} processed; ${savedCopies} copies saved; ${failed} failed; ${skipped.length} files skipped; ${staged} copies staged for local repair. Use Results or Copy errors.`);
@@ -421,13 +486,52 @@
     return { records, folders: Array.from(folders).sort() };
   }
 
+  function downloadFolderSelected(path, selection) {
+    let selected = false, depth = -1;
+    for (const [rule, included] of selection.rules) {
+      if ((path === rule || path.startsWith(rule + ' > ')) && rule.length > depth) { selected = included; depth = rule.length; }
+    }
+    return selected;
+  }
+
+  function setDownloadFolderSelection(selection, path, included) {
+    for (const rule of selection.rules.keys()) if (rule === path || rule.startsWith(path + ' > ')) selection.rules.delete(rule);
+    selection.rules.set(path, included);
+  }
+
+  function downloadFolderStates(folders, selection) {
+    const states = new Map(folders.map(path => [path, { total: 1, selected: downloadFolderSelected(path, selection) ? 1 : 0, children: 0 }]));
+    for (const path of [...folders].sort((a, b) => b.split(' > ').length - a.split(' > ').length)) {
+      const parent = path.split(' > ').slice(0, -1).join(' > ');
+      if (states.has(parent)) {
+        const own = states.get(path), above = states.get(parent);
+        above.total += own.total; above.selected += own.selected; above.children++;
+      }
+    }
+    for (const state of states.values()) { state.checked = state.selected === state.total; state.mixed = state.selected > 0 && state.selected < state.total; }
+    return states;
+  }
+
+  function downloadSelectionOffset(selection) {
+    const included = [...selection.rules].filter(([, value]) => value).map(([path]) => path);
+    const roots = included.filter(path => !included.some(other => other !== path && path.startsWith(other + ' > '))).map(path => path.split(' > '));
+    if (!roots.length) throw new Error('Choose a mapped folder first.');
+    let common = 0;
+    while (roots.every(parts => parts[common] !== undefined && parts[common] === roots[0][common])) common++;
+    return Math.min(common, ...roots.map(parts => parts.length - 1));
+  }
+
   function planMappedDownloads(displayed, metadata, selected) {
-    if (metadata && !metadata.folders.includes(selected)) throw new Error('Choose a mapped folder first.');
-    const root = selected ? selected.split(' > ') : [];
+    if (metadata && typeof selected === 'string') {
+      if (!metadata.folders.includes(selected)) throw new Error('Choose a mapped folder first.');
+      selected = { rules: new Map([[selected, true]]) };
+    }
+    if (metadata && (!selected?.rules || [...selected.rules.keys()].some(path => !metadata.folders.includes(path)))) throw new Error('Choose a mapped folder first.');
+    const offset = metadata ? downloadSelectionOffset(selected) : 0;
     const eligible = new Map();
     if (metadata) for (const [id, paths] of metadata.records) {
-      const matching = paths.filter(parts => root.every((part, i) => parts[i] === part));
-      if (matching.length) eligible.set(id, matching.map(parts => parts.slice(root.length - 1)));
+      const matching = paths.filter(parts => downloadFolderSelected(parts.join(' > '), selected));
+      if (matching.length) eligible.set(id, matching.map(parts => parts.slice(offset)));
     }
     const byName = new Map(), matchedIds = new Set();
     let matched = 0;
@@ -737,7 +841,7 @@
 
 
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.31';
+  const SCRIPT_VERSION  = '4.32';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;
