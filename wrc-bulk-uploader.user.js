@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
 // @namespace    https://westminster.cadetnet.mod.uk/
-// @version      4.30
+// @version      4.31
 // @description  Resource Centre upload, folder, link, bulk edit, and sequential download tools.
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
@@ -31,15 +31,22 @@
     const events = [];
     let runId = null;
     let metadata = null;
+    let manifest = null;
+    let view = 'all';
+    const results = [];
     const panel = document.createElement('section');
     panel.id = 'wrc-download-panel';
     panel.style.cssText = 'position:fixed;bottom:24px;right:24px;width:380px;max-width:calc(100vw - 32px);max-height:80vh;overflow:auto;z-index:2147483646;background:white;color:#222;border:2px solid #0572ce;border-radius:8px;box-shadow:0 6px 24px #0003;font:13px Segoe UI,sans-serif;padding:12px;box-sizing:border-box';
+    panel.style.width = '460px';
+    const style = document.createElement('style');
+    style.textContent = '#wrc-download-panel{border:1px solid #d6dce6!important;padding:0!important;border-radius:14px!important;box-shadow:0 12px 45px #182b4930!important}#wrc-download-panel strong{font-size:14px}#wrc-download-panel>div:first-child{padding:14px 18px;background:#f3f6fb;border-bottom:1px solid #e0e5ed}#wrc-dl-body{padding:0 18px 16px}#wrc-download-panel p{line-height:1.5;color:#536175}#wrc-download-panel button{padding:7px 10px;border:1px solid #ccd5e2;border-radius:7px;background:#f8fafc;color:#253751;cursor:pointer}#wrc-download-panel button:disabled{opacity:.45;cursor:default}#wrc-dl-start{background:#165bd4!important;color:white!important;border-color:#165bd4!important}#wrc-download-panel input,#wrc-download-panel select{box-sizing:border-box;padding:6px;border:1px solid #cbd5e1;border-radius:6px;max-width:100%}#wrc-dl-status{background:#edf3ff;padding:10px;border-radius:8px;color:#214776!important}#wrc-dl-log{border:1px solid #e1e7ef;border-radius:8px;padding:8px;overflow-wrap:anywhere;white-space:pre-wrap}#wrc-dl-log>div{padding:6px 0;border-bottom:1px solid #edf0f5}';
+    document.body.appendChild(style);
     panel.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.30</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
+      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.31</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
       <div id="wrc-dl-body">
         <h3 style="margin:12px 0 6px">Bulk download</h3>
         <p>Downloads files currently displayed in Manage Documents. Apply your filters and increase rows per page first. Other pages are not included.</p>
-        <p>Rows with zero Folder Entries are skipped. Original filenames, raw files only. Duplicate filenames and existing files are skipped. Existing files are never overwritten.</p>
+        <p>Resume skips non-empty completed copies. Missing and empty files are retried. Original filenames and folder assignments are preserved.</p>
         <label>Optional folder mapping CSV: <input id="wrc-dl-metadata" type="file" accept=".csv,text/csv"></label>
         <p><label>Resource Centre folder: <select id="wrc-dl-tree" disabled style="width:100%"><option value="">No mapping loaded (flat download)</option></select></label></p>
         <button type="button" id="wrc-dl-preview">Scan / preview</button>
@@ -52,21 +59,57 @@
         <div style="display:flex;gap:8px;margin-top:12px"><button type="button" id="wrc-dl-start">Download displayed files</button><button type="button" id="wrc-dl-stop" disabled>Stop</button></div>
         <p id="wrc-dl-status" role="status" aria-live="polite">Ready.</p>
         <button type="button" id="wrc-dl-export">Export download log</button>
+        <button type="button" id="wrc-dl-copy-errors">Copy errors</button><button type="button" id="wrc-dl-copy-log">Copy full log</button>
+        <button type="button" id="wrc-dl-recovery-status">Check recovery status</button>
+        <p><label>Results: <select id="wrc-dl-results"><option value="all">All</option><option value="failed">Failed</option><option value="successful">Successful</option><option value="skipped">Skipped</option><option value="recovery">Recovery staged</option></select></label></p>
+        <p id="wrc-dl-counts">No run results yet.</p>
         <div id="wrc-dl-log" style="max-height:140px;overflow:auto;font-size:12px;white-space:pre-wrap"></div>
       </div>`;
     document.body.appendChild(panel);
     const get = id => panel.querySelector('#wrc-dl-' + id);
     const status = message => { get('status').textContent = message; };
-    const log = message => {
+    const category = message => /FAILED|file_failed|run_halted/i.test(message) ? 'failed' : /recovery_staged|file_staged/i.test(message) ? 'recovery' : /Saved:|copy_saved|copy_recovered|file_completed/i.test(message) ? 'successful' : /SKIPPED|skipped/i.test(message) ? 'skipped' : 'all';
+    const log = (message, kindOverride = null) => {
       const row = document.createElement('div');
       row.textContent = message;
+      const kind = kindOverride || category(message);
+      row.hidden = view !== 'all' && kind !== view;
+      results.push({ message, kind, row });
       get('log').appendChild(row);
       get('log').scrollTop = get('log').scrollHeight;
+      const counts = kind => results.filter(item => item.kind === kind).length;
+      get('counts').textContent = `Errors ${counts('failed')} · Saved events ${counts('successful')} · Skips ${counts('skipped')} · Recovery ${counts('recovery')}`;
+    };
+    get('results').onchange = () => { view = get('results').value; for (const item of results) item.row.hidden = view !== 'all' && item.kind !== view; };
+    const copy = async text => {
+      try { await navigator.clipboard.writeText(text); status('Copied to clipboard.'); }
+      catch (_) {
+        const area = document.createElement('textarea'); area.value = text; area.style.cssText = 'position:fixed;left:-9999px'; document.body.appendChild(area); area.select();
+        const copied = document.execCommand('copy'); area.remove(); status(copied ? 'Copied to clipboard.' : 'Clipboard unavailable. Use Export download log.');
+      }
+    };
+    get('copy-errors').onclick = () => copy(results.filter(item => item.kind === 'failed').map(item => item.message).join('\n') || 'No errors in the current results.');
+    get('copy-log').onclick = () => copy(events.map(event => JSON.stringify(event)).join('\n'));
+    get('recovery-status').onclick = async () => {
+      if (!destination) { status('Choose the download root first.'); return; }
+      try {
+        const stage = await destination.getDirectoryHandle('.wrc-recovery');
+        const handle = await stage.getFileHandle('recovery-results.json');
+        const report = JSON.parse(await (await handle.getFile()).text());
+        let recovered = 0, failures = 0;
+        for (const item of report.results || []) {
+          if (item.status === 'failed') { failures++; record('file_failed', { id: item.id, name: item.relativePath, phase: 'native_recovery', error: downloadLogError(new Error(item.error)) }); }
+          else { recovered++; record('copy_recovered', { id: item.id, destination: item.relativePath, message: 'Local helper reports destination verified.' }); }
+        }
+        status(`Local helper reports ${recovered} copies verified and ${failures} failures. Existing saved files are preserved.`);
+      } catch (error) { status('Recovery report not available yet: ' + error.message); }
     };
     const record = (event, details = {}) => {
       const entry = { time: new Date().toISOString(), runId, event, ...details };
       events.push(entry);
-      log(`${entry.time} ${event}: ${JSON.stringify(details)}`);
+      const kind = ['file_failed', 'run_halted'].includes(event) ? 'failed' : ['recovery_staged', 'file_staged'].includes(event) ? 'recovery' : ['copy_saved', 'copy_recovered', 'file_completed'].includes(event) ? 'successful' : ['row_skipped', 'copy_skipped', 'file_skipped'].includes(event) ? 'skipped' : 'all';
+      const description = event === 'file_failed' ? `${details.name || 'Download'} [ID ${details.id || '-'}] - ${details.phase || 'unknown stage'}: ${details.error}; HTTP ${details.httpStatus || '-'}; Retry-After ${details.retryAfter || '-'}` : JSON.stringify(details);
+      log(`${entry.time} ${event}: ${description}`, kind);
     };
     const settings = () => readDownloadSpeed(get('concurrency').value, get('delay').value);
     try {
@@ -117,6 +160,7 @@
       try {
         const plan = scan();
         get('log').replaceChildren();
+        results.length = 0;
         for (const file of plan.files) log(`${file.name} [ID ${file.id}] -> ${file.paths.map(p => p.join('/') || '[chosen folder]').join('; ')}`);
         status(`${plan.matched} matching displayed records; ${plan.files.length} files to fetch; ${plan.copies} folder copies; ${plan.missing} mapped IDs not eligible/displayed; ${plan.skipped.length} zero-entry rows. Nothing downloaded.`);
       } catch (error) { status(error.message); }
@@ -165,6 +209,9 @@
       let files;
       const skipped = [];
       get('log').replaceChildren();
+      results.length = 0;
+      try { manifest = await openDownloadManifest(destination); }
+      catch (error) { status('Cannot open resume manifest: ' + error.message); return; }
       let plan;
       try { plan = scan(); files = plan.files; skipped.push(...plan.skipped); }
       catch (error) { status(error.message); return; }
@@ -179,19 +226,33 @@
       runReason = '';
       for (const id of ['start', 'folder', 'metadata', 'tree', 'preview']) get(id).disabled = true;
       get('stop').disabled = false;
-      let done = 0, failed = 0, savedCopies = 0, consecutiveFailures = 0, downloadedBytes = 0;
+      let done = 0, failed = 0, attempted = 0, staged = 0, savedCopies = 0, consecutiveFailures = 0, downloadedBytes = 0;
+      const totalFiles = files.length;
       const startedAt = Date.now();
-      record('run_started', { version: '4.30', files: files.length, matched: plan.matched, copies: plan.copies, missing: plan.missing, zeroEntryRows: plan.skipped.length, ...speed });
+      record('run_started', { version: '4.31', files: files.length, matched: plan.matched, copies: plan.copies, missing: plan.missing, zeroEntryRows: plan.skipped.length, ...speed });
       try {
+        const pending = [];
+        for (let i = 0; i < files.length && !stopped; i++) {
+          const file = files[i];
+          status(`Checking saved copies ${i + 1}/${totalFiles}. No download requests yet.`);
+          try {
+            file.targets = await pendingDownloadTargets(destination, file, message => record('copy_skipped', { id: file.id, name: file.name, destination: message.replace(/^SKIPPED: /, '') }), manifest);
+            if (file.targets.length) pending.push(file);
+            else { skipped.push(file); attempted++; record('file_skipped', { id: file.id, name: file.name, reason: 'all copies already present' }); }
+          } catch (error) { failed++; attempted++; record('file_failed', { id: file.id, name: file.name, phase: 'resume_check', error: downloadLogError(error) }); }
+          if (i % 25 === 0) await new Promise(resolve => setTimeout(resolve, 0));
+        }
+        files = pending;
         await runDownloadPool(files, settings, async (file, launchSpeed) => {
           const controller = new AbortController();
           controllers.add(controller);
           const timeout = setTimeout(() => controller.abort(), 120000);
           const fileStarted = Date.now();
           let phase = 'destination';
+          let needsRepair = false;
           record('file_started', { id: file.id, name: file.name, active: controllers.size, ...launchSpeed });
           try {
-            const targets = await pendingDownloadTargets(destination, file, message => record('copy_skipped', { id: file.id, name: file.name, destination: message.replace(/^SKIPPED: /, '') }));
+            const targets = file.targets;
             if (!targets.length) {
               skipped.push(file);
               record('file_skipped', { id: file.id, name: file.name, reason: 'all copies already exist' });
@@ -226,8 +287,8 @@
             await saveDownloadCopies(targets, file.name, blob, () => stopped, message => {
               if (message.startsWith('Saved: ')) savedCopies++;
               record(message.startsWith('Saved: ') ? 'copy_saved' : 'copy_skipped', { id: file.id, name: file.name, destination: message.replace(/^(Saved|SKIPPED): /, '') });
-            });
-            if (!stopped) { done++; consecutiveFailures = 0; record('file_completed', { id: file.id, name: file.name, bytes: blob.size, elapsedMs: Date.now() - fileStarted }); }
+            }, { root: destination, file, manifest, onStage: label => { staged++; needsRepair = true; record('recovery_staged', { id: file.id, name: file.name, destination: label, message: 'Waiting for local repair helper; not yet saved to final folder.' }); } });
+            if (!stopped) { if (!needsRepair) done++; consecutiveFailures = 0; record(needsRepair ? 'file_staged' : 'file_completed', { id: file.id, name: file.name, bytes: blob.size, elapsedMs: Date.now() - fileStarted }); }
           } catch (error) {
             if (stopped) { record('file_cancelled', { id: file.id, name: file.name, phase, reason: runReason }); return; }
             failed++;
@@ -240,21 +301,30 @@
               for (const active of controllers) active.abort();
               record('run_halted', { reason: runReason, message: 'Resolve the session or server issue before trying again. No automatic retries.' });
             }
-          } finally { clearTimeout(timeout); controllers.delete(controller); }
+          } finally { attempted++; clearTimeout(timeout); controllers.delete(controller); }
         }, () => stopped, progress => {
           const seconds = Math.max(1, (Date.now() - startedAt) / 1000);
-          status(`${done}/${files.length} completed; ${progress.active} active; ${savedCopies} copies; ${failed} failed; ${(done * 60 / seconds).toFixed(1)} files/min, ${(downloadedBytes / 1048576 / seconds).toFixed(2)} MiB/s.`);
+          status(`${attempted}/${totalFiles} processed; ${progress.active} active; ${savedCopies} copies saved; ${failed} failed; ${staged} staged; ${(done * 60 / seconds).toFixed(1)} files/min, ${(downloadedBytes / 1048576 / seconds).toFixed(2)} MiB/s.`);
         }, () => { stopped = true; runReason = 'invalid_speed'; for (const active of controllers) active.abort(); });
       } catch (error) {
         stopped = true; runReason = 'invalid_speed';
         record('run_halted', { reason: runReason, error: downloadLogError(error) });
       } finally {
+        if (staged) {
+          try {
+            const stage = await destination.getDirectoryHandle('.wrc-recovery', { create: true });
+            const handle = await stage.getFileHandle('run.ready.json', { create: true });
+            const writer = await handle.createWritable();
+            try { await writer.write(JSON.stringify({ runId, readyAt: new Date().toISOString() })); await writer.close(); }
+            catch (error) { await writer.abort().catch(() => {}); throw error; }
+          } catch (error) { record('file_failed', { phase: 'recovery_ready', error: downloadLogError(error) }); }
+        }
         busy = false;
         for (const id of ['start', 'folder', 'delay', 'metadata', 'preview']) get(id).disabled = false;
         get('tree').disabled = !metadata;
         get('stop').disabled = true;
-        record('run_finished', { done, failed, skipped: skipped.length, savedCopies, downloadedBytes, stopped, reason: runReason || 'complete', elapsedMs: Date.now() - startedAt });
-        status(`${stopped ? 'Stopped' : 'Finished'}: ${done}/${files.length} files completed, ${savedCopies} copies saved, ${failed} failed, ${skipped.length} skipped. See results below.`);
+        record('run_finished', { attempted, done, failed, staged, skipped: skipped.length, savedCopies, downloadedBytes, stopped, reason: runReason || 'complete', elapsedMs: Date.now() - startedAt });
+        status(`${stopped ? 'Stopped' : 'Finished'}: ${attempted}/${totalFiles} processed; ${savedCopies} copies saved; ${failed} failed; ${skipped.length} files skipped; ${staged} copies staged for local repair. Use Results or Copy errors.`);
       }
     };
   }
@@ -379,33 +449,107 @@
     return { files, matched, copies: files.reduce((sum, file) => sum + file.paths.length, 0), missing: metadata ? eligible.size - matchedIds.size : 0 };
   }
 
-  async function pendingDownloadTargets(root, file, log) {
+  async function openDownloadManifest(root) {
+    const name = '.wrc-download-manifest.json';
+    let data = { schema: 1, copies: {} };
+    try {
+      const handle = await root.getFileHandle(name);
+      data = JSON.parse(await (await handle.getFile()).text());
+      if (data.schema !== 1 || !data.copies || typeof data.copies !== 'object') throw new Error('Invalid manifest format.');
+    } catch (error) { if (error.name !== 'NotFoundError') throw error; }
+    let queue = Promise.resolve();
+    const nativeCopies = await verifyNativeDownloadCopies(root, data);
+    return { data, nativeCopies, async record(label, id, size, status = 'completed') {
+      const task = queue.then(async () => {
+        data.copies[label] = { id, size, status, savedAt: new Date().toISOString() };
+        const handle = await root.getFileHandle(name, { create: true });
+        const writer = await handle.createWritable();
+        try { await writer.write(JSON.stringify(data, null, 2)); await writer.close(); }
+        catch (error) { await writer.abort().catch(() => {}); throw error; }
+      });
+      queue = task.catch(() => {});
+      return task;
+    } };
+  }
+
+  async function verifyNativeDownloadCopies(root, data) {
+    if (!Object.values(data.copies).some(copy => copy.native === true)) return {};
+    const stage = await root.getDirectoryHandle('.wrc-recovery', { create: true });
+    const requestId = Date.now() + '-' + Math.random().toString(36).slice(2);
+    const handle = await stage.getFileHandle('verify.request.json', { create: true });
+    const writer = await handle.createWritable();
+    try { await writer.write(JSON.stringify({ requestId })); await writer.close(); }
+    catch (error) { await writer.abort().catch(() => {}); throw error; }
+    for (let i = 0; i < 30; i++) {
+      try {
+        const response = await stage.getFileHandle('verify.response.json');
+        const result = JSON.parse(await (await response.getFile()).text());
+        if (result.requestId === requestId) return result.copies || {};
+      } catch (error) { if (error.name !== 'NotFoundError' && !(error instanceof SyntaxError)) throw error; }
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('Start the local recovery helper to verify long-path files before resuming.');
+  }
+
+  async function pendingDownloadTargets(root, file, log, manifest = null) {
     const targets = [];
     for (const path of file.paths) {
-      let folder = root;
-      for (const part of path) folder = await folder.getDirectoryHandle(part, { create: true });
       const label = [...path, file.name].join('/');
-      if (await downloadFileExists(folder, file.name)) log('SKIPPED: ' + label + ' - file already exists');
-      else targets.push({ folder, label });
+      const verified = manifest?.nativeCopies?.[label];
+      if (verified?.exists && verified.size > 0 && verified.size === manifest.data.copies[label]?.size) {
+        log('SKIPPED: ' + label + ' - verified on disk by local helper'); continue;
+      }
+      let folder = root;
+      try { for (const part of path) folder = await folder.getDirectoryHandle(part, { create: true }); }
+      catch (error) { if (error.name !== 'NotFoundError') throw error; targets.push({ folder: null, label }); continue; }
+      if (await downloadFileExists(folder, file.name)) {
+        const handle = await folder.getFileHandle(file.name);
+        const size = handle.getFile ? (await handle.getFile()).size : null;
+        const previous = manifest?.data.copies[label];
+        if (previous && size !== null && previous.size !== size) throw new Error('Existing file size differs from manifest: ' + label + '. Preserved; review before replacing.');
+        log('SKIPPED: ' + label + ' - non-empty file already exists');
+      } else targets.push({ folder, label });
     }
     return targets;
   }
 
-  async function saveDownloadCopies(targets, name, blob, isStopped, log) {
+  async function stageDownloadRecovery(options, label, blob) {
+    const stage = await options.root.getDirectoryHandle('.wrc-recovery', { create: true });
+    const dataName = options.file.id + '.bin';
+    const index = options.file.paths.findIndex(path => [...path, options.file.name].join('/') === label);
+    if (index < 0) throw new Error('Recovery destination is not in the download plan.');
+    const write = async (name, value) => {
+      const handle = await stage.getFileHandle(name, { create: true }); const writer = await handle.createWritable();
+      try { await writer.write(value); await writer.close(); } catch (error) { await writer.abort().catch(() => {}); throw error; }
+    };
+    await write(dataName, blob);
+    await write(options.file.id + '-' + index + '.job.json', JSON.stringify({ schema: 1, id: options.file.id, relativePath: label, dataName, size: blob.size }));
+    options.onStage(label);
+  }
+
+  async function saveDownloadCopies(targets, name, blob, isStopped, log, options = null) {
     for (const { folder, label } of targets) {
       if (isStopped()) return;
-      if (await downloadFileExists(folder, name)) { log('SKIPPED: ' + label + ' - file already exists'); continue; }
-      const handle = await folder.getFileHandle(name, { create: true });
-      const writer = await handle.createWritable();
-      if (isStopped()) { await writer.abort().catch(() => {}); return; }
-      try { await writer.write(blob); await writer.close(); }
-      catch (error) { await writer.abort().catch(() => {}); throw error; }
+      if (folder && await downloadFileExists(folder, name)) { log('SKIPPED: ' + label + ' - file already exists'); continue; }
+      try {
+        if (!folder) throw Object.assign(new Error('Folder path unavailable to browser'), { name: 'NotFoundError' });
+        const handle = await folder.getFileHandle(name, { create: true });
+        const writer = await handle.createWritable();
+        if (isStopped()) { await writer.abort().catch(() => {}); return; }
+        try { await writer.write(blob); await writer.close(); }
+        catch (error) { await writer.abort().catch(() => {}); throw error; }
+        if (handle.getFile && (await handle.getFile()).size !== blob.size) throw new Error('Saved file size does not match response.');
+      } catch (error) {
+        if (options && error.name === 'NotFoundError' && !isStopped()) { await stageDownloadRecovery(options, label, blob); continue; }
+        throw error;
+      }
+      if (options?.manifest) await options.manifest.record(label, options.file.id, blob.size);
       log('Saved: ' + label);
     }
   }
 
   async function downloadFileExists(folder, name) {
-    try { await folder.getFileHandle(name); return true; }
+    try { const handle = await folder.getFileHandle(name); return handle.getFile ? (await handle.getFile()).size > 0 : true; }
     catch (error) { if (error.name === 'NotFoundError') return false; throw error; }
   }
 
@@ -593,7 +737,7 @@
 
 
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.30';
+  const SCRIPT_VERSION  = '4.31';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;

@@ -41,8 +41,8 @@ assert.equal(vm.runInContext('collectDisplayedDownloads(report).length',context)
     return {name:path,kind:'directory',async getDirectoryHandle(name){return directory(path+'/'+name)},async getFileHandle(name,options){
       const key=path+'/'+name;
       if(!options?.create && !disk.has(key)) throw Object.assign(new Error(),{name:'NotFoundError'});
-      if(options?.create) disk.set(key,true);
-      return {async createWritable(){return {async write(blob){assert.equal(blob.size,4)},async close(){saved.push(key)},async abort(){}}}};
+      if(options?.create && !disk.has(key)) disk.set(key,{size:0});
+      return {async getFile(){const value=disk.get(key);return {size:typeof value==='string'?value.length:value.size,text:async()=>value}},async createWritable(){let value;return {async write(blob){if(typeof blob!=='string')assert.equal(blob.size,4);value=blob},async close(){disk.set(key,value);if(!name.startsWith('.wrc-'))saved.push(key)},async abort(){}}}};
     }};
   }
   const remembered=new Map();
@@ -152,7 +152,13 @@ assert.equal(vm.runInContext('collectDisplayedDownloads(report).length',context)
   assert.equal(blockedCalls,2,'A throttled run must not launch queued work');
   assert(aborted>=1,'Throttle cancels peer requests');
   const logs=elements['#wrc-dl-log'].children.map(row=>row.textContent).join('\n');
-  assert.match(logs,/"httpStatus":429/);assert.match(logs,/"retryAfter":"60 seconds"/);
+  assert.match(logs,/HTTP 429/);assert.match(logs,/Retry-After 60 seconds/);
+  elements['#wrc-dl-results'].value='failed';elements['#wrc-dl-results'].onchange();
+  assert(elements['#wrc-dl-log'].children.filter(row=>!row.hidden).every(row=>/file_failed|run_halted/.test(row.textContent)),'Failures isolated from success rows');
+  let copied='';context.navigator={clipboard:{writeText:async text=>{copied=text}}};
+  await elements['#wrc-dl-copy-errors'].onclick();
+  assert.match(copied,/429/);assert(!copied.includes('copy_saved'));
+  await elements['#wrc-dl-copy-log'].onclick();assert(copied.split('\n').every(line=>JSON.parse(line).event));
   assert(!logs.includes('oraclegovcloud.uk/test/'),'Logs never contain storage URLs');
   context.report=report([row('60','error-a.pdf'),row('61','error-b.pdf'),row('62','error-c.pdf'),row('63','error-d.pdf')]);
   elements['#wrc-dl-concurrency'].value='1';
