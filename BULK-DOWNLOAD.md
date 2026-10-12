@@ -1,4 +1,18 @@
-# Toolkit bulk downloads (v4.28)
+# Toolkit bulk downloads (v4.29)
+
+## Download a mapped folder tree (v4.29)
+
+On Manage Documents, show all desired rows and keep File Name, Download and # Folder Entries visible. Load the **bulk document metadata CSV** using **Optional folder mapping CSV**. This export must contain **Select** (document ID) and **Folder Path**. The CSV is read locally for this page session, never uploaded or saved by the Toolkit. Reloading requires loading the mapping again. The Folders and Manage Documents CSVs are not needed by the browser.
+
+Choose a Resource Centre folder from the selector. ACS21 is selected automatically when present. **Scan / preview** lists matched IDs, filenames and relative destinations, counts folder copies, and reports mapped IDs absent from eligible displayed rows. It never creates folders or fetches files. Missing IDs may be off-page, filtered out, or have zero Folder Entries. The download rescans the current report on each click.
+
+Choose a local **download folder** as the destination root. For example, choosing `D:\Syllabus` with ACS21 selected saves files beneath `D:\Syllabus\Army Cadet Syllabus 21 (ACS21)\[08] Expedition\4 Star\Assessments`. The selected folder's name is retained; its ancestors are omitted. Every matching assignment inside the selected tree receives a copy. Assignments outside the chosen tree are excluded by document ID, even when their filenames match. Archived records are included if displayed and mapped; apply a Published status filter if you want only published documents.
+
+Click **Download displayed files** after reviewing the scan. Files with the same case-insensitive filename are fetched once, using the first matching displayed ID, and their mapped target folders are combined. No content comparison is performed. Existing files are skipped per destination folder, without overwriting or suffixes; missing copies still download. Folder names unsafe on Windows stop the plan rather than silently renaming directories. Stop prevents further copies after an in-progress write finishes. If a copy fails, previously saved copies remain; rerunning skips those and retries missing copies. The log records each saved or skipped destination, and the final summary counts completed files and saved copies.
+
+Without a metadata CSV, the existing flat download behavior remains. A selected invalid CSV blocks downloading until corrected or cleared, so it cannot accidentally download every row. Existing throttling, authentication, HTML, permission and timeout protections remain in effect. Run `node download-mapping-check.cjs`, `node download-check.cjs` and `node download-cards-check.cjs` for offline verification. Real folder writes and the updated page controls still require a small user-run live check.
+
+## Flat download from Manage Documents
 
 Two entry points share the same protocol: the Manage Documents batch panel (below) and, from v4.28, a **Download** tab on the Resource Centre home page for quick downloads from the document cards you can see. See "Quick download from home cards" at the end.
 

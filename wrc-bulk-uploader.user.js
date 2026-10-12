@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
 // @namespace    https://westminster.cadetnet.mod.uk/
-// @version      4.28
+// @version      4.29
 // @description  Resource Centre upload, folder, link, bulk edit, and sequential download tools.
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
@@ -27,15 +27,20 @@
     let busy = false;
     let stopped = false;
     let controller = null;
+    let metadata = null;
     const panel = document.createElement('section');
     panel.id = 'wrc-download-panel';
     panel.style.cssText = 'position:fixed;bottom:24px;right:24px;width:380px;max-width:calc(100vw - 32px);max-height:80vh;overflow:auto;z-index:2147483646;background:white;color:#222;border:2px solid #0572ce;border-radius:8px;box-shadow:0 6px 24px #0003;font:13px Segoe UI,sans-serif;padding:12px;box-sizing:border-box';
     panel.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.28</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
+      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.29</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
       <div id="wrc-dl-body">
         <h3 style="margin:12px 0 6px">Bulk download</h3>
         <p>Downloads files currently displayed in Manage Documents. Apply your filters and increase rows per page first. Other pages are not included.</p>
         <p>Rows with zero Folder Entries are skipped. Original filenames, raw files only. Duplicate filenames and existing files are skipped. Existing files are never overwritten.</p>
+        <label>Optional folder mapping CSV: <input id="wrc-dl-metadata" type="file" accept=".csv,text/csv"></label>
+        <p><label>Resource Centre folder: <select id="wrc-dl-tree" disabled style="width:100%"><option value="">No mapping loaded (flat download)</option></select></label></p>
+        <button type="button" id="wrc-dl-preview">Scan / preview</button>
+        <p>With a mapping loaded, only the selected folder and its subfolders are included. Each file is copied to every matching folder beneath your chosen download folder.</p>
         <button type="button" id="wrc-dl-folder">Choose download folder</button>
         <p id="wrc-dl-destination">No folder selected.</p>
         <label>Pause between files (seconds): <input id="wrc-dl-delay" type="number" min="1" max="60" value="3" style="width:55px"></label>
@@ -53,6 +58,39 @@
       get('log').scrollTop = get('log').scrollHeight;
     };
     get('min').onclick = () => { get('body').hidden = !get('body').hidden; };
+    get('metadata').onchange = async () => {
+      metadata = null;
+      get('tree').replaceChildren();
+      get('tree').disabled = true;
+      const file = get('metadata').files?.[0];
+      if (!file) { status('No mapping loaded. Downloads will use the flat folder.'); return; }
+      try {
+        metadata = parseDownloadMetadata(await file.text());
+        for (const path of metadata.folders) {
+          const option = document.createElement('option');
+          option.value = option.textContent = path;
+          get('tree').appendChild(option);
+        }
+        get('tree').value = metadata.folders.find(path => path.endsWith(' > Army Cadet Syllabus 21 (ACS21)')) || metadata.folders[0];
+        get('tree').disabled = false;
+        status(`Loaded ${metadata.records.size} document IDs. Choose a folder, then Scan / preview.`);
+      } catch (error) { metadata = null; status('Mapping could not be loaded: ' + error.message); }
+    };
+    const scan = () => {
+      if (get('metadata').files?.length && !metadata) throw new Error('Load a valid metadata CSV before downloading, or clear the file selection for a flat download.');
+      const skipped = [];
+      const displayed = collectDisplayedDownloads(document, file => skipped.push(file));
+      const plan = planMappedDownloads(displayed, metadata, get('tree').value);
+      return { ...plan, skipped };
+    };
+    get('preview').onclick = () => {
+      try {
+        const plan = scan();
+        get('log').replaceChildren();
+        for (const file of plan.files) log(`${file.name} [ID ${file.id}] -> ${file.paths.map(p => p.join('/') || '[chosen folder]').join('; ')}`);
+        status(`${plan.matched} matching displayed records; ${plan.files.length} files to fetch; ${plan.copies} folder copies; ${plan.missing} mapped IDs not eligible/displayed; ${plan.skipped.length} zero-entry rows. Nothing downloaded.`);
+      } catch (error) { status(error.message); }
+    };
     get('folder').disabled = get('start').disabled = true;
     rememberDownloadFolder().then(saved => {
       if (saved?.kind === 'directory') {
@@ -95,20 +133,11 @@
       let files;
       const skipped = [];
       get('log').replaceChildren();
-      try { files = collectDisplayedDownloads(document, file => skipped.push(file)); }
+      let plan;
+      try { plan = scan(); files = plan.files; skipped.push(...plan.skipped); }
       catch (error) { status(error.message); return; }
       for (const file of skipped) log(`SKIPPED: ${file.name} [ID ${file.id}] - zero Folder Entries`);
-      const names = new Set();
-      files = files.filter(file => {
-        const name = file.name.toLowerCase();
-        if (names.has(name)) {
-          skipped.push(file);
-          log(`SKIPPED: ${file.name} [ID ${file.id}] - duplicate filename`);
-          return false;
-        }
-        names.add(name);
-        return true;
-      });
+      log(`Scan: ${plan.matched} matching displayed records; ${files.length} files; ${plan.copies} folder copies; ${plan.missing} mapped IDs not eligible/displayed.`);
       if (!files.length) { status(`No eligible download links found. ${skipped.length} skipped.`); return; }
       const delay = Number(get('delay').value);
       if (!Number.isFinite(delay) || delay < 1 || delay > 60) {
@@ -116,9 +145,9 @@
       }
       busy = true;
       stopped = false;
-      for (const id of ['start', 'folder', 'delay']) get(id).disabled = true;
+      for (const id of ['start', 'folder', 'delay', 'metadata', 'tree', 'preview']) get(id).disabled = true;
       get('stop').disabled = false;
-      let done = 0, failed = 0;
+      let done = 0, failed = 0, savedCopies = 0;
       try {
         for (let i = 0; i < files.length && !stopped; i++) {
           const file = files[i];
@@ -126,7 +155,8 @@
           controller = new AbortController();
           const timeout = setTimeout(() => controller.abort(), 120000);
           try {
-            if (await downloadFileExists(destination, file.name)) {
+            const targets = await pendingDownloadTargets(destination, file, message => log(message));
+            if (!targets.length) {
               skipped.push(file);
               log(`SKIPPED: ${file.name} [ID ${file.id}] - file already exists`);
               continue;
@@ -145,14 +175,11 @@
             if (!blob.size) throw new Error('Empty response');
             // APEX authentication/error pages must never be saved as documents.
             if (/text\/html|application\/xhtml/i.test(blob.type) && !/\.html?$/i.test(file.name)) throw new Error('Server returned a web page instead of the file; file may be unavailable.');
-            const filename = file.name;
-            if (await downloadFileExists(destination, filename)) throw new Error('File already exists: ' + filename + '; skipped to avoid overwriting');
-            const handle = await destination.getFileHandle(filename, { create: true });
-            const writer = await handle.createWritable();
-            try { await writer.write(blob); await writer.close(); }
-            catch (error) { await writer.abort().catch(() => {}); throw error; }
-            done++;
-            log('Saved: ' + filename);
+            await saveDownloadCopies(targets, file.name, blob, () => stopped, message => {
+              if (message.startsWith('Saved: ')) savedCopies++;
+              log(message);
+            });
+            if (!stopped) done++;
           } catch (error) {
             if (stopped) break;
             failed++;
@@ -170,11 +197,115 @@
         }
       } finally {
         busy = false;
-        for (const id of ['start', 'folder', 'delay']) get(id).disabled = false;
+        for (const id of ['start', 'folder', 'delay', 'metadata', 'preview']) get(id).disabled = false;
+        get('tree').disabled = !metadata;
         get('stop').disabled = true;
-        status(`${stopped ? 'Stopped' : 'Finished'}: ${done}/${files.length} saved, ${failed} failed, ${skipped.length} skipped. See results below.`);
+        status(`${stopped ? 'Stopped' : 'Finished'}: ${done}/${files.length} files completed, ${savedCopies} copies saved, ${failed} failed, ${skipped.length} skipped. See results below.`);
       }
     };
+  }
+
+  function parseDownloadCsv(text) {
+    text = String(text).replace(/^\uFEFF/, '');
+    const rows = []; let row = [], cell = '', quoted = false, closed = false;
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (quoted) {
+        if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; }
+        else if (c === '"') { quoted = false; closed = true; }
+        else cell += c;
+      } else if (c === '"') {
+        if (cell || closed) throw new Error('Malformed CSV quoting.');
+        quoted = true;
+      } else if (c === ',' || c === '\n' || c === '\r') {
+        row.push(cell); cell = ''; closed = false;
+        if (c !== ',') {
+          if (row.some(value => value !== '')) rows.push(row);
+          row = [];
+          if (c === '\r' && text[i + 1] === '\n') i++;
+        }
+      } else {
+        if (closed) throw new Error('Unexpected text after a CSV quote.');
+        cell += c;
+      }
+    }
+    if (quoted) throw new Error('Unclosed CSV quote.');
+    row.push(cell);
+    if (row.some(value => value !== '')) rows.push(row);
+    return rows;
+  }
+
+  function parseDownloadMetadata(text) {
+    const rows = parseDownloadCsv(text);
+    const headers = rows.shift()?.map(value => value.trim().toLowerCase()) || [];
+    const idIndex = headers.indexOf('select'), pathIndex = headers.indexOf('folder path');
+    if (idIndex < 0 || pathIndex < 0) throw new Error('Use the bulk document metadata export with Select and Folder Path columns.');
+    const records = new Map(), folders = new Set();
+    for (const row of rows) {
+      if (row.length !== headers.length) throw new Error('CSV row has an unexpected number of columns.');
+      const id = row[idIndex].trim();
+      if (!/^\d+$/.test(id)) throw new Error('CSV contains an invalid document ID.');
+      const paths = (row[pathIndex] || '').split(':').filter(value => value.trim()).map(value => value.split(' > ').map(part => part.trim()));
+      for (const parts of paths) {
+        if (parts.some(part => !part)) throw new Error('CSV contains an empty folder name.');
+        for (let n = 1; n <= parts.length; n++) folders.add(parts.slice(0, n).join(' > '));
+      }
+      records.set(id, [...(records.get(id) || []), ...paths]);
+    }
+    if (!records.size || !folders.size) throw new Error('No document folder mappings found.');
+    return { records, folders: Array.from(folders).sort() };
+  }
+
+  function planMappedDownloads(displayed, metadata, selected) {
+    if (metadata && !metadata.folders.includes(selected)) throw new Error('Choose a mapped folder first.');
+    const root = selected ? selected.split(' > ') : [];
+    const eligible = new Map();
+    if (metadata) for (const [id, paths] of metadata.records) {
+      const matching = paths.filter(parts => root.every((part, i) => parts[i] === part));
+      if (matching.length) eligible.set(id, matching.map(parts => parts.slice(root.length - 1)));
+    }
+    const byName = new Map(), matchedIds = new Set();
+    let matched = 0;
+    for (const file of displayed) {
+      const paths = metadata ? eligible.get(file.id) : [[]];
+      if (!paths) continue;
+      matched++; matchedIds.add(file.id);
+      const key = file.name.toLowerCase();
+      let item = byName.get(key);
+      if (!item) { item = { ...file, paths: [] }; byName.set(key, item); }
+      for (const path of paths) {
+        for (const part of path) {
+          if (!part || /[\\/:*?"<>|\u0000-\u001f]/.test(part) || /[. ]$/.test(part) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(part)) throw new Error('Folder cannot be saved safely on Windows: ' + part + '. No downloads started.');
+        }
+        if (!item.paths.some(existing => existing.join('/').toLowerCase() === path.join('/').toLowerCase())) item.paths.push(path);
+      }
+    }
+    const files = Array.from(byName.values());
+    return { files, matched, copies: files.reduce((sum, file) => sum + file.paths.length, 0), missing: metadata ? eligible.size - matchedIds.size : 0 };
+  }
+
+  async function pendingDownloadTargets(root, file, log) {
+    const targets = [];
+    for (const path of file.paths) {
+      let folder = root;
+      for (const part of path) folder = await folder.getDirectoryHandle(part, { create: true });
+      const label = [...path, file.name].join('/');
+      if (await downloadFileExists(folder, file.name)) log('SKIPPED: ' + label + ' - file already exists');
+      else targets.push({ folder, label });
+    }
+    return targets;
+  }
+
+  async function saveDownloadCopies(targets, name, blob, isStopped, log) {
+    for (const { folder, label } of targets) {
+      if (isStopped()) return;
+      if (await downloadFileExists(folder, name)) { log('SKIPPED: ' + label + ' - file already exists'); continue; }
+      const handle = await folder.getFileHandle(name, { create: true });
+      const writer = await handle.createWritable();
+      try { await writer.write(blob); await writer.close(); }
+      catch (error) { await writer.abort().catch(() => {}); throw error; }
+      log('Saved: ' + label);
+    }
   }
 
   async function downloadFileExists(folder, name) {
@@ -362,7 +493,7 @@
 
 
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.28';
+  const SCRIPT_VERSION  = '4.29';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;
