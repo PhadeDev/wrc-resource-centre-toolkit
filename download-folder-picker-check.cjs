@@ -7,6 +7,12 @@ vm.runInContext(source.slice(source.indexOf('  function startDownloadView'), sou
 const mapping = context.parseDownloadMetadata('Select,Folder Path\n1,Top > A > Child > Deep:Top > B > Child\n2,Top > A\n3,Top > A > Child\n4,Elsewhere > A > Child\n5,Top > AA > Child');
 const displayed = ['1','2','3','4','5'].map(id => ({id,name:id+'.pdf'}));
 const selection = {rules:new Map([['Top > A',true]])};
+const snapshot={schema:1,csv:'Select,Folder Path\n1,Top > A',name:'mapping.csv',importedAt:'2026-10-12T00:00:00Z',rules:[]};
+assert.equal(context.restoreDownloadMapping(snapshot).selection.rules.size,0,'Empty stored selection is valid and must stay empty');
+assert.throws(()=>context.restoreDownloadMapping({...snapshot,schema:2}),/Unsupported/);
+assert.throws(()=>context.restoreDownloadMapping({...snapshot,importedAt:'bad'}),/Unsupported/);
+assert.throws(()=>context.restoreDownloadMapping({...snapshot,rules:[['Top',true],['Top',false]]}),/Invalid saved/);
+assert.throws(()=>context.restoreDownloadMapping({...snapshot,rules:[['Top','true']]}),/Invalid saved/);
 const plan = () => JSON.parse(JSON.stringify(context.planMappedDownloads(displayed,mapping,selection)));
 assert.equal(plan().copies,3);
 assert.deepEqual(plan().files.find(x=>x.id==='1').paths,[['A','Child','Deep']]);

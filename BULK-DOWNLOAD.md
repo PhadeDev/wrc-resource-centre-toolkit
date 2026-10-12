@@ -1,10 +1,20 @@
-# Toolkit bulk downloads (v4.32)
+# Toolkit bulk downloads (v4.33)
+
+## Remembered mapping and selections (v4.33)
+
+Import the metadata CSV once. Its text, source filename, import timestamp and exact folder-selection rules are saved in the browser's IndexedDB and restored on the next Manage Documents visit. The panel shows **Saved in this browser**, **Restored from this browser**, or an explicit save error. The source filename and import date stay visible. This is a cached snapshot, not a live link to the disk file; replacing or deleting that CSV on disk does not update the cached mapping. No mapping is embedded in the published userscript or uploaded by the Toolkit.
+
+Import a fresh CSV to replace the saved mapping. A valid import starts with the usual ACS21 selection when present, so review selections again. Invalid imports block downloading for that session and preserve the previous valid browser record. Checkbox changes, exclusions, Select all and Clear all automatically save their rules; an empty selection stays empty across reloads. Writes are serialized. Saving failures leave the current mapping usable but explicitly report that it will not be remembered. Startup waits for storage reads before allowing downloads, and corrupt saved data blocks flat fallback until replaced or cleared.
+
+**Clear saved mapping** removes the cached CSV and selection rules, clears the file input and returns to explicit flat-download mode. It does not remove your CSV backups, chosen download folder, speed preferences or downloaded files. If browser deletion fails, the panel warns that old data may return on reload. Clearing browser site data or switching browser profiles can lose this cache; the disk copies are your independent backup. The source files are backed up locally at `C:\Users\Phaderon\Documents\Resource Centre\Mapping`. No automatic disk-folder scanning or permission request is added.
+
+Offline integration tests cover restore without a selected CSV, remembered exclusions and empty selections, replacement, invalid imports preserving the previous record, corrupt stored rules, blocked startup, save failures, clearing and subsequent reload. Live persistence still needs confirmation after one import and page refresh.
 
 ## Searchable multi-folder picker (v4.32)
 
 Load the bulk metadata CSV, then click **Resource Centre folders** to browse its expandable tree. Tick a parent to include that folder and all descendants. Untick a branch to exclude it; you can tick a deeper descendant to include it again. Partly selected parents show a mixed checkbox. Reticking a parent selects its whole branch and clears earlier descendant exceptions.
 
-Search matches folder names or full paths and shows matching branches with their ancestors. It only changes visibility, never the selection. **Select all** and **Clear all** apply to the entire mapping, including folders hidden by search. **Done** closes the picker; changes apply immediately. No folders selected blocks mapped downloads. Folder controls are disabled during a run. Selections and CSV data last for the page session; reloading restores the ACS21 default when available.
+Search matches folder names or full paths and shows matching branches with their ancestors. It only changes visibility, never the selection. **Select all** and **Clear all** apply to the entire mapping, including folders hidden by search. **Done** closes the picker; changes apply immediately. No folders selected blocks mapped downloads. Folder controls are disabled during a run. From v4.33, CSV data and selection rules are remembered locally; a fresh import starts with the ACS21 default when available.
 
 Use **Scan / preview** before downloading to see file counts, folder-copy counts and exact relative destinations. Only the currently displayed eligible Manage Documents rows can download, even with Select all. A document assigned to both an excluded folder and an included folder still gets its copy in the included folder. Every excluded assignment is omitted.
 
@@ -44,7 +54,7 @@ These controls apply to Manage Documents only; home-card downloads retain their 
 
 ## Download a mapped folder tree (v4.29)
 
-On Manage Documents, show all desired rows and keep File Name, Download and # Folder Entries visible. Load the **bulk document metadata CSV** using **Optional folder mapping CSV**. This export must contain **Select** (document ID) and **Folder Path**. The CSV is read locally for this page session, never uploaded or saved by the Toolkit. Reloading requires loading the mapping again. The Folders and Manage Documents CSVs are not needed by the browser.
+On Manage Documents, show all desired rows and keep File Name, Download and # Folder Entries visible. Load the **bulk document metadata CSV** using **Optional folder mapping CSV**. This export must contain **Select** (document ID) and **Folder Path**. From v4.33, the CSV is cached locally in the browser and preloaded after refresh; it is never uploaded by the Toolkit. The Folders and Manage Documents CSVs are not needed by the browser.
 
 Choose a Resource Centre folder from the selector. ACS21 is selected automatically when present. **Scan / preview** lists matched IDs, filenames and relative destinations, counts folder copies, and reports mapped IDs absent from eligible displayed rows. It never creates folders or fetches files. Missing IDs may be off-page, filtered out, or have zero Folder Entries. The download rescans the current report on each click.
 

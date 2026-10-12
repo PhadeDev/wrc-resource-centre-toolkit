@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
 // @namespace    https://westminster.cadetnet.mod.uk/
-// @version      4.32
+// @version      4.33
 // @description  Resource Centre upload, folder, link, bulk edit, and mapped bulk download tools.
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
@@ -32,6 +32,11 @@
     let runId = null;
     let metadata = null;
     let folderSelection = null;
+    let mappingSource = null;
+    let mappingProblem = '';
+    let mappingReady = false;
+    let mappingWrites = Promise.resolve();
+    let mappingRevision = 0;
     const expandedFolders = new Set();
     let manifest = null;
     let view = 'all';
@@ -44,12 +49,14 @@
     style.textContent = '#wrc-download-panel{border:1px solid #d6dce6!important;padding:0!important;border-radius:14px!important;box-shadow:0 12px 45px #182b4930!important}#wrc-download-panel strong{font-size:14px}#wrc-download-panel>div:first-child{padding:14px 18px;background:#f3f6fb;border-bottom:1px solid #e0e5ed}#wrc-dl-body{padding:0 18px 16px}#wrc-download-panel p{line-height:1.5;color:#536175}#wrc-download-panel button{padding:7px 10px;border:1px solid #ccd5e2;border-radius:7px;background:#f8fafc;color:#253751;cursor:pointer}#wrc-download-panel button:disabled{opacity:.45;cursor:default}#wrc-dl-start{background:#165bd4!important;color:white!important;border-color:#165bd4!important}#wrc-download-panel input,#wrc-download-panel select{box-sizing:border-box;padding:6px;border:1px solid #cbd5e1;border-radius:6px;max-width:100%}#wrc-dl-status{background:#edf3ff;padding:10px;border-radius:8px;color:#214776!important}#wrc-dl-log{border:1px solid #e1e7ef;border-radius:8px;padding:8px;overflow-wrap:anywhere;white-space:pre-wrap}#wrc-dl-log>div{padding:6px 0;border-bottom:1px solid #edf0f5}';
     document.body.appendChild(style);
     panel.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.32</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
+      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.33</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
       <div id="wrc-dl-body">
         <h3 style="margin:12px 0 6px">Bulk download</h3>
         <p>Downloads files currently displayed in Manage Documents. Apply your filters and increase rows per page first. Other pages are not included.</p>
         <p>Resume skips non-empty completed copies. Missing and empty files are retried. Original filenames and folder assignments are preserved.</p>
         <label>Optional folder mapping CSV: <input id="wrc-dl-metadata" type="file" accept=".csv,text/csv"></label>
+        <p id="wrc-dl-mapping-info" role="status" style="margin:6px 0">Checking remembered mapping...</p>
+        <button type="button" id="wrc-dl-clear-mapping" disabled>Clear saved mapping</button>
         <p>Resource Centre folders:<br><button type="button" id="wrc-dl-tree" disabled style="width:100%;text-align:left">No mapping loaded (flat download)</button></p>
         <fieldset id="wrc-dl-picker" hidden style="border:1px solid #dbe3ee;border-radius:10px;margin:0 0 12px;padding:10px">
           <legend>Choose folders</legend>
@@ -140,6 +147,35 @@
       link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
     get('min').onclick = () => { get('body').hidden = !get('body').hidden; };
+    const describeMapping = suffix => {
+      get('mapping-info').textContent = mappingSource ? `Mapping: ${mappingSource.name} · Imported ${new Date(mappingSource.importedAt).toLocaleString()} · ${suffix}` : suffix;
+    };
+    const saveMapping = () => {
+      if (!mappingSource || !folderSelection) return Promise.resolve();
+      const snapshot = { schema: 1, ...mappingSource, rules: [...folderSelection.rules] };
+      const revision = ++mappingRevision;
+      describeMapping('Saving locally...');
+      const task = mappingWrites.then(() => rememberDownloadFolder(snapshot, 'saved_mapping'));
+      mappingWrites = task.catch(() => {});
+      return task.then(() => { if (mappingRevision === revision) describeMapping('Saved in this browser'); }, error => {
+        if (mappingRevision === revision) describeMapping('Not saved: ' + error.message + '. Keep the CSV for next time.');
+      });
+    };
+    const resetMapping = () => {
+      metadata = null; folderSelection = null; mappingSource = null; mappingProblem = '';
+      mappingRevision++;
+      expandedFolders.clear(); get('folder-list').replaceChildren(); get('picker').hidden = true; get('search').value = '';
+      get('tree').textContent = 'No mapping loaded (flat download)'; get('tree').disabled = true;
+    };
+    const applyMapping = (parsed, selection, source) => {
+      metadata = parsed; folderSelection = selection; mappingSource = source; mappingProblem = '';
+      expandedFolders.clear();
+      for (const [path, included] of selection.rules) if (included) {
+        const parts = path.split(' > ');
+        for (let n = 1; n <= parts.length; n++) expandedFolders.add(parts.slice(0, n).join(' > '));
+      }
+      renderFolders(); get('tree').disabled = false;
+    };
     const renderFolders = (focusPath = null, focusType = 'check') => {
       get('folder-list').replaceChildren();
       if (!metadata || !folderSelection) return;
@@ -171,7 +207,7 @@
         label.style.cssText = 'display:flex;align-items:center;gap:6px;overflow-wrap:anywhere;cursor:pointer';
         const check = document.createElement('input'); check.type = 'checkbox';
         check.checked = states.get(path).checked; check.indeterminate = states.get(path).mixed;
-        check.onchange = () => { setDownloadFolderSelection(folderSelection, path, check.checked); renderFolders(path); };
+        check.onchange = () => { setDownloadFolderSelection(folderSelection, path, check.checked); renderFolders(path); return saveMapping(); };
         if (path === focusPath) focusControl = focusType === 'expand' ? expand : check;
         const name = document.createElement('span'); name.textContent = parts.at(-1); name.title = path;
         label.appendChild(check); label.appendChild(name); row.appendChild(expand); row.appendChild(label);
@@ -191,29 +227,37 @@
     get('picker-done').onclick = () => { get('picker').hidden = true; };
     get('search').value = '';
     get('search').oninput = renderFolders;
-    get('all').onclick = () => { folderSelection.rules.clear(); for (const path of metadata.folders.filter(path => !path.includes(' > '))) folderSelection.rules.set(path, true); renderFolders(); };
-    get('none').onclick = () => { folderSelection.rules.clear(); renderFolders(); };
+    get('all').onclick = () => { folderSelection.rules.clear(); for (const path of metadata.folders.filter(path => !path.includes(' > '))) folderSelection.rules.set(path, true); renderFolders(); return saveMapping(); };
+    get('none').onclick = () => { folderSelection.rules.clear(); renderFolders(); return saveMapping(); };
+    get('clear-mapping').onclick = async () => {
+      if (busy || !mappingReady) return;
+      resetMapping(); get('metadata').value = '';
+      describeMapping('No mapping loaded. Flat downloads use the chosen folder.');
+      const task = mappingWrites.then(() => rememberDownloadFolder(null, 'saved_mapping'));
+      mappingWrites = task.catch(() => {});
+      try { await task; status('Saved mapping and folder selections cleared. CSV backups are unchanged.'); }
+      catch (error) { describeMapping('Could not clear saved browser data: ' + error.message + '. It may return after reload.'); }
+    };
     get('metadata').onchange = async () => {
-      metadata = null;
-      folderSelection = null;
-      expandedFolders.clear();
-      get('folder-list').replaceChildren(); get('picker').hidden = true; get('search').value = '';
-      get('tree').textContent = 'No mapping loaded (flat download)';
-      get('tree').disabled = true;
       const file = get('metadata').files?.[0];
-      if (!file) { status('No mapping loaded. Downloads will use the flat folder.'); return; }
+      if (!file) { if (!metadata) status('No mapping loaded. Downloads will use the flat folder.'); return; }
+      resetMapping();
+      const revision = mappingRevision;
       try {
-        metadata = parseDownloadMetadata(await file.text());
-        const initial = metadata.folders.find(path => path.endsWith(' > Army Cadet Syllabus 21 (ACS21)')) || metadata.folders[0];
-        folderSelection = { rules: new Map([[initial, true]]) };
-        const parts = initial.split(' > ');
-        for (let n = 1; n <= parts.length; n++) expandedFolders.add(parts.slice(0, n).join(' > '));
-        renderFolders();
-        get('tree').disabled = false;
+        const csv = await file.text();
+        if (mappingRevision !== revision) return;
+        const parsed = parseDownloadMetadata(csv);
+        const initial = parsed.folders.find(path => path.endsWith(' > Army Cadet Syllabus 21 (ACS21)')) || parsed.folders[0];
+        applyMapping(parsed, { rules: new Map([[initial, true]]) }, { csv, name: file.name || 'Imported CSV', importedAt: new Date().toISOString() });
+        const source = mappingSource;
+        await saveMapping();
+        if (mappingSource !== source) return;
         status(`Loaded ${metadata.records.size} document IDs. Choose a folder, then Scan / preview.`);
-      } catch (error) { metadata = null; status('Mapping could not be loaded: ' + error.message); }
+      } catch (error) { if (mappingRevision !== revision) return; resetMapping(); mappingProblem = 'Mapping could not be loaded: ' + error.message; describeMapping(mappingProblem + '. Previous saved mapping has not been replaced.'); status(mappingProblem); }
     };
     const scan = () => {
+      if (!mappingReady) throw new Error('Wait for remembered mapping to finish loading.');
+      if (mappingProblem) throw new Error(mappingProblem + '. Import a valid CSV or use Clear saved mapping before downloading.');
       if (get('metadata').files?.length && !metadata) throw new Error('Load a valid metadata CSV before downloading, or clear the file selection for a flat download.');
       const skipped = [];
       const displayed = collectDisplayedDownloads(document, file => skipped.push(file));
@@ -229,15 +273,26 @@
         status(`${plan.matched} matching displayed records; ${plan.files.length} files to fetch; ${plan.copies} folder copies; ${plan.missing} mapped IDs not eligible/displayed; ${plan.skipped.length} zero-entry rows. Nothing downloaded.`);
       } catch (error) { status(error.message); }
     };
-    get('folder').disabled = get('start').disabled = true;
-    rememberDownloadFolder().then(saved => {
+    for (const id of ['folder', 'start', 'metadata', 'preview']) get(id).disabled = true;
+    const restoreMapping = rememberDownloadFolder(undefined, 'saved_mapping').then(saved => {
+      if (!saved) { describeMapping('No saved mapping. Import a CSV once to remember it.'); return; }
+      try {
+        const restored = restoreDownloadMapping(saved);
+        applyMapping(restored.metadata, restored.selection, restored.source);
+        describeMapping('Restored from this browser');
+      } catch (error) { mappingProblem = 'Saved mapping is invalid: ' + error.message; describeMapping(mappingProblem + '. Import a CSV or clear it.'); }
+    }).catch(error => { mappingProblem = 'Cannot read saved mapping: ' + error.message; describeMapping(mappingProblem + '. Import a CSV or clear it.'); });
+    const restoreDestination = rememberDownloadFolder().then(saved => {
       if (saved?.kind === 'directory') {
         destination = saved;
         get('destination').textContent = 'Remembered folder: ' + saved.name;
         status('Last download folder restored. Click Download to approve access if the browser asks.');
       }
-    }).catch(() => { status('Folder memory unavailable. Choose a download folder for this session.'); })
-      .finally(() => { get('folder').disabled = get('start').disabled = false; });
+    }).catch(() => { status('Folder memory unavailable. Choose a download folder for this session.'); });
+    Promise.allSettled([restoreMapping, restoreDestination]).then(() => {
+      mappingReady = true;
+      for (const id of ['folder', 'start', 'metadata', 'preview', 'clear-mapping']) get(id).disabled = false;
+    });
     get('folder').onclick = async () => {
       if (!window.showDirectoryPicker) {
         status('Folder saving is unavailable in this browser. Use Chrome or Edge.');
@@ -288,7 +343,7 @@
       busy = true;
       stopped = false;
       runReason = '';
-      for (const id of ['start', 'folder', 'metadata', 'tree', 'picker', 'preview']) get(id).disabled = true;
+      for (const id of ['start', 'folder', 'metadata', 'tree', 'picker', 'preview', 'clear-mapping']) get(id).disabled = true;
       get('stop').disabled = false;
       let done = 0, failed = 0, attempted = 0, staged = 0, savedCopies = 0, consecutiveFailures = 0, downloadedBytes = 0;
       const totalFiles = files.length;
@@ -384,7 +439,7 @@
           } catch (error) { record('file_failed', { phase: 'recovery_ready', error: downloadLogError(error) }); }
         }
         busy = false;
-        for (const id of ['start', 'folder', 'delay', 'metadata', 'preview']) get(id).disabled = false;
+        for (const id of ['start', 'folder', 'delay', 'metadata', 'preview', 'clear-mapping']) get(id).disabled = false;
         get('tree').disabled = !metadata;
         get('picker').disabled = false;
         get('stop').disabled = true;
@@ -492,6 +547,17 @@
       if ((path === rule || path.startsWith(rule + ' > ')) && rule.length > depth) { selected = included; depth = rule.length; }
     }
     return selected;
+  }
+
+  function restoreDownloadMapping(saved) {
+    if (saved.schema !== 1 || typeof saved.csv !== 'string' || typeof saved.name !== 'string' || typeof saved.importedAt !== 'string' || !Number.isFinite(Date.parse(saved.importedAt)) || !Array.isArray(saved.rules)) throw new Error('Unsupported or incomplete saved data.');
+    const metadata = parseDownloadMetadata(saved.csv);
+    const rules = new Map();
+    for (const rule of saved.rules) {
+      if (!Array.isArray(rule) || rule.length !== 2 || !metadata.folders.includes(rule[0]) || typeof rule[1] !== 'boolean' || rules.has(rule[0])) throw new Error('Invalid saved folder selection.');
+      rules.set(rule[0], rule[1]);
+    }
+    return { metadata, selection: { rules }, source: { csv: saved.csv, name: saved.name, importedAt: saved.importedAt } };
   }
 
   function setDownloadFolderSelection(selection, path, included) {
@@ -698,9 +764,9 @@
         const db = request.result;
         let result;
         try {
-          const transaction = db.transaction('folders', handle ? 'readwrite' : 'readonly');
+          const transaction = db.transaction('folders', handle !== undefined ? 'readwrite' : 'readonly');
           const store = transaction.objectStore('folders');
-          const operation = handle ? store.put(handle, key) : store.get(key);
+          const operation = handle === null ? store.delete(key) : handle !== undefined ? store.put(handle, key) : store.get(key);
           operation.onsuccess = () => { result = operation.result; };
           transaction.oncomplete = () => { db.close(); resolve(result); };
           transaction.onabort = transaction.onerror = () => { db.close(); reject(transaction.error || new Error('Folder storage failed')); };
@@ -841,7 +907,7 @@
 
 
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.32';
+  const SCRIPT_VERSION  = '4.33';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;

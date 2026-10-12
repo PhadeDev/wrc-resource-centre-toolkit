@@ -51,7 +51,7 @@ assert.equal(vm.runInContext('collectDisplayedDownloads(report).length',context)
     setTimeout(()=>{
       request.result={close(){},transaction(){
         const transaction={objectStore(){return {
-          get(key){return operation(key)},put(value,key){remembered.set(key,value);return operation(key)}
+          get(key){return operation(key)},put(value,key){remembered.set(key,value);return operation(key)},delete(key){remembered.delete(key);return operation(key)}
         }}};
         function operation(key){const request={};setTimeout(()=>{request.result=remembered.get(key);request.onsuccess?.();transaction.oncomplete?.()},0);return request}
         return transaction;
@@ -153,8 +153,46 @@ assert.equal(vm.runInContext('collectDisplayedDownloads(report).length',context)
   assert.match(elements['#wrc-dl-status'].textContent,/2 copies saved/);
   await elements['#wrc-dl-start'].onclick();
   assert.equal(requests,1,'All copies present: skip fetch on repeat');
-  elements['#wrc-dl-metadata'].files=[];
+  const reload = async () => {
+    elements['#wrc-dl-metadata'].files=[];
+    vm.runInContext('startDownloadView()',context);
+    elements['#wrc-dl-preview'].onclick();
+    assert.match(elements['#wrc-dl-status'].textContent,/Wait for remembered mapping/,'Startup cannot race into flat mode');
+    for(let i=0;i<100 && elements['#wrc-dl-start'].disabled;i++) await new Promise(resolve=>setTimeout(resolve,5));
+    assert.equal(elements['#wrc-dl-start'].disabled,false);
+  };
+  checkbox=folderCheck('Training > Army Cadet Syllabus 21 (ACS21) > Two');
+  checkbox.checked=false;await checkbox.onchange();
+  assert(remembered.get('saved_mapping').rules.some(([path,value])=>path.endsWith(' > Two') && value===false));
+  await reload();
+  assert.match(elements['#wrc-dl-mapping-info'].textContent,/Imported CSV.*Imported .*Restored from this browser/);
+  elements['#wrc-dl-preview'].onclick();
+  assert.match(elements['#wrc-dl-status'].textContent,/1 files to fetch; 1 folder copies/,'Reload restores excluded branch without any file selected');
+  await elements['#wrc-dl-none'].onclick();
+  await reload();elements['#wrc-dl-preview'].onclick();
+  assert.match(elements['#wrc-dl-status'].textContent,/Choose a mapped folder/,'Clear all remains empty on reload rather than restoring default');
+  elements['#wrc-dl-metadata'].files=[{name:'fresh.csv',text:async()=>csv}];
   await elements['#wrc-dl-metadata'].onchange();
+  assert.equal(remembered.get('saved_mapping').name,'fresh.csv');
+  const validSnapshot=structuredClone(remembered.get('saved_mapping'));
+  elements['#wrc-dl-metadata'].files=[{text:async()=> 'invalid,csv'}];
+  await elements['#wrc-dl-metadata'].onchange();
+  assert.deepEqual(JSON.parse(JSON.stringify(remembered.get('saved_mapping'))),validSnapshot,'Invalid replacement preserves last valid saved mapping');
+  await reload();assert.match(elements['#wrc-dl-mapping-info'].textContent,/fresh.csv/);
+  const normalStorage=context.indexedDB;
+  context.indexedDB={open(){const request={};setTimeout(()=>{request.error=Error('Storage quota test');request.onerror()},0);return request}};
+  elements['#wrc-dl-metadata'].files=[{name:'unsaved.csv',text:async()=>csv}];
+  await elements['#wrc-dl-metadata'].onchange();
+  assert.match(elements['#wrc-dl-mapping-info'].textContent,/Not saved:.*Storage quota test/);
+  assert.deepEqual(JSON.parse(JSON.stringify(remembered.get('saved_mapping'))),validSnapshot);
+  context.indexedDB=normalStorage;
+  remembered.set('saved_mapping',{...validSnapshot,rules:[['Unknown',true]]});
+  await reload();elements['#wrc-dl-preview'].onclick();
+  assert.match(elements['#wrc-dl-status'].textContent,/Saved mapping is invalid/,'Corrupt saved selection blocks flat fallback');
+  elements['#wrc-dl-metadata'].files=[];
+  await elements['#wrc-dl-clear-mapping'].onclick();
+  assert.equal(remembered.has('saved_mapping'),false,'Clear saved mapping deletes browser record');
+  await reload();assert.match(elements['#wrc-dl-mapping-info'].textContent,/No saved mapping/);
   elements['#wrc-dl-concurrency'].value='3';elements['#wrc-dl-delay'].value='0';
   context.report=report([row('40','fast-a.pdf'),row('41','fast-b.pdf'),row('42','fast-c.pdf'),row('43','fast-d.pdf')]);
   active=0;maxActive=0;

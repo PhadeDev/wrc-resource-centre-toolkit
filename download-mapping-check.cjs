@@ -69,6 +69,9 @@ for (const bad of ['..','CON','bad/name','trailing.']) {
     const actual=context.planMappedDownloads(report,real,root);
     assert.equal(actual.matched,1362); assert.equal(actual.files.length,1350); assert.equal(actual.missing,0);
     assert(actual.files.every(file=>file.paths.every(path=>path[0]==='Army Cadet Syllabus 21 (ACS21)')));
+    const restored=context.restoreDownloadMapping(JSON.parse(JSON.stringify({schema:1,csv:fs.readFileSync(process.argv[2],'utf8'),name:'bulk_document_metadata (1).csv',importedAt:'2026-10-12T00:00:00Z',rules:[[root,true]]})));
+    const cached=context.planMappedDownloads(report,restored.metadata,restored.selection);
+    assert.equal(cached.files.length,1350);assert.equal(cached.copies,1529,'Full supplied mapping round-trips through persisted snapshot');
     const selection={rules:new Map(real.folders.filter(path=>!path.includes(' > ')).map(path=>[path,true]))};
     const all=context.planMappedDownloads(report,real,selection);
     assert.equal(all.matched,3033);assert.equal(all.files.length,2992);assert.equal(all.copies,3734);
