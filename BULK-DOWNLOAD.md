@@ -1,4 +1,18 @@
-# Toolkit bulk downloads (v4.29)
+# Toolkit bulk downloads (v4.30)
+
+## Speed controls and logs (Manage Documents, v4.30)
+
+**Concurrent downloads** sets the maximum number of active file jobs (1-8, default 1). **Gap between starts** sets a global interval between starting jobs (0-60 seconds, fractional values allowed, default 1 second). This gap applies across the whole queue, not separately to each worker. Each slot stays occupied through URL resolution, downloading and saving all folder copies. With concurrency 1, the next file starts after the current file finishes and the start gap has elapsed. Settings are remembered locally when browser storage permits.
+
+Both settings remain editable during downloading. Increasing concurrency permits more jobs to start; decreasing it lets current jobs finish before starting any above the new cap. Changing the gap updates subsequent launches. An empty or invalid live setting halts the run and cancels active requests. There is no automatic concurrency ramp, retry or rate-limit probing. The site's permitted download rate is unknown; the controls cannot guarantee that a run will avoid a server-side restriction.
+
+Live progress includes active jobs, completed files, copies saved, failures, files/minute and average downloaded MiB/s. Stop cancels all URL resolvers and storage fetches, prevents queued starts and further folder copies, and lets an in-progress disk write finish. Runs wait for every active job to finish or cancel before the controls are unlocked. Existing filename merging ensures concurrent workers cannot independently write the same planned file.
+
+HTTP 401/403/429/503, an explicit session redirect, a storage network failure, or an unavailable APEX helper halt the entire run and cancel other requests. Three consecutive failed jobs without a successful completion also halt the run (including unexpected HTML, empty responses, timeouts, disk errors and other HTTP errors). Previously completed files are retained. No automatic retries occur. Inspect the log and resolve any server/session issue before restarting; existing copies will be skipped on the next run. Retry-After is recorded when exposed by the failing response, but does not trigger an automatic restart. Cancellation of peer jobs is logged separately from the triggering failure. A failure response alone does not identify the site's security rules.
+
+**Export download log** saves a JSONL file containing timestamped run starts/finishes, speed changes, file starts, successful response status, saved copies, skips, completion sizes/durations, errors with phase and HTTP status, exposed Retry-After, cancellations and halt reason. Logs cover this page session, including previous runs; export before refreshing. They include document IDs, filenames and relative destinations. They do not include signed storage URLs, cookies or session tokens. The visible panel shows the current scan/run. The export is generated locally and nothing is uploaded by the logger. Unknown error messages have URLs and obvious credential assignments redacted.
+
+These controls apply to Manage Documents only; home-card downloads retain their existing sequential controls. Offline checks: `node download-speed-check.cjs`, `node download-check.cjs`, `node download-mapping-check.cjs`, and `node download-cards-check.cjs`. Updated controls, concurrency and real server reactions still need user-run live verification.
 
 ## Download a mapped folder tree (v4.29)
 
@@ -21,10 +35,10 @@ The existing Toolkit now also runs on Manage Documents. On that page it shows on
 1. Update the Toolkit in Violentmonkey or Tampermonkey, then reload Manage Documents.
 2. Apply the site's filters. Set the report rows per page to include the batch you want. Keep File Name, Download and # Folder Entries columns visible. Rows with zero Folder Entries are skipped and listed in the results, based on the user's observed broken downloads for these records.
 3. Click **Choose download folder** and select the exact local batch folder in Chrome or Edge. Approve the browser's folder-write prompt. The last folder handle is saved in this site's IndexedDB and restored on refresh; clicking Download may require renewed write permission. Choose download folder changes the remembered folder. Clearing site data removes this memory. It is separate from the uploader's remembered source folder.
-4. Set the pause between files if required (default 3 seconds).
+4. Set concurrency and the gap between starts if required (defaults: 1 active download, 1-second start gap).
 5. Click **Download displayed files**. Keep the page open until it finishes. The results show saved files and failures. **Stop** cancels an active fetch or stops between files; an in-progress disk write finishes.
 
-Only the displayed report rows are included, not other pages or a previously saved scan. Each document ID is fetched once per batch, sequentially. A pause reduces load but does not guarantee the site's monitoring will permit any particular volume. Explicit sign-in redirects and HTTP 401/403/429/503 stop the run. Other failed files, including unexpected HTML responses, are logged and the batch continues; HTML is not saved as a PDF/document. Requests time out after two minutes. A HTML response alone cannot distinguish a broken file from a login page returned without a sign-in redirect.
+Only the displayed report rows are included, not other pages or a previously saved scan. Each retained filename is fetched once per batch with the chosen concurrency and global start gap. Explicit sign-in redirects and HTTP 401/403/429/503 stop the run. Other failed files, including unexpected HTML responses, are logged and the batch continues unless three consecutive jobs fail; HTML is not saved as a PDF/document. Requests time out after two minutes. An HTML response alone cannot distinguish a broken file from a login page returned without a sign-in redirect.
 
 Raw files are saved with original names in the chosen folder only. The first eligible report record for each filename is kept; later records with the same filename (case-insensitive) are skipped before requesting any URL. Files already in the destination folder are also skipped before downloading. No suffixes or subfolders are created. No content comparison is performed; same filename does not establish identical contents. If the first record fails, later duplicate records are still skipped.
 

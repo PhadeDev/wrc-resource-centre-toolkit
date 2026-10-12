@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Westminster RC – Resource Center Toolkit
 // @namespace    https://westminster.cadetnet.mod.uk/
-// @version      4.29
+// @version      4.30
 // @description  Resource Centre upload, folder, link, bulk edit, and sequential download tools.
 // @match        https://westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
 // @match        https://www.westminster.cadetnet.mod.uk/app/r/westminster/resource_centre/home*
@@ -26,13 +26,16 @@
     let destination = null;
     let busy = false;
     let stopped = false;
-    let controller = null;
+    const controllers = new Set();
+    let runReason = '';
+    const events = [];
+    let runId = null;
     let metadata = null;
     const panel = document.createElement('section');
     panel.id = 'wrc-download-panel';
     panel.style.cssText = 'position:fixed;bottom:24px;right:24px;width:380px;max-width:calc(100vw - 32px);max-height:80vh;overflow:auto;z-index:2147483646;background:white;color:#222;border:2px solid #0572ce;border-radius:8px;box-shadow:0 6px 24px #0003;font:13px Segoe UI,sans-serif;padding:12px;box-sizing:border-box';
     panel.innerHTML = `
-      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.29</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
+      <div style="display:flex;justify-content:space-between;align-items:center"><strong>Resource Centre Toolkit v4.30</strong><button type="button" id="wrc-dl-min" aria-label="Minimise downloads">−</button></div>
       <div id="wrc-dl-body">
         <h3 style="margin:12px 0 6px">Bulk download</h3>
         <p>Downloads files currently displayed in Manage Documents. Apply your filters and increase rows per page first. Other pages are not included.</p>
@@ -43,9 +46,12 @@
         <p>With a mapping loaded, only the selected folder and its subfolders are included. Each file is copied to every matching folder beneath your chosen download folder.</p>
         <button type="button" id="wrc-dl-folder">Choose download folder</button>
         <p id="wrc-dl-destination">No folder selected.</p>
-        <label>Pause between files (seconds): <input id="wrc-dl-delay" type="number" min="1" max="60" value="3" style="width:55px"></label>
+        <p><label>Concurrent downloads: <input id="wrc-dl-concurrency" type="number" min="1" max="8" step="1" value="1" style="width:55px"></label></p>
+        <label>Gap between starts (seconds): <input id="wrc-dl-delay" type="number" min="0" max="60" step="0.1" value="1" style="width:55px"></label>
+        <p>Speed settings apply during a run. Lowering concurrency lets current files finish. Blocking responses stop all requests; no automatic retries.</p>
         <div style="display:flex;gap:8px;margin-top:12px"><button type="button" id="wrc-dl-start">Download displayed files</button><button type="button" id="wrc-dl-stop" disabled>Stop</button></div>
         <p id="wrc-dl-status" role="status" aria-live="polite">Ready.</p>
+        <button type="button" id="wrc-dl-export">Export download log</button>
         <div id="wrc-dl-log" style="max-height:140px;overflow:auto;font-size:12px;white-space:pre-wrap"></div>
       </div>`;
     document.body.appendChild(panel);
@@ -56,6 +62,30 @@
       row.textContent = message;
       get('log').appendChild(row);
       get('log').scrollTop = get('log').scrollHeight;
+    };
+    const record = (event, details = {}) => {
+      const entry = { time: new Date().toISOString(), runId, event, ...details };
+      events.push(entry);
+      log(`${entry.time} ${event}: ${JSON.stringify(details)}`);
+    };
+    const settings = () => readDownloadSpeed(get('concurrency').value, get('delay').value);
+    try {
+      const saved = JSON.parse(localStorage.getItem('wrc_download_speed') || 'null');
+      if (saved) { const valid = readDownloadSpeed(saved.concurrency, saved.delay); get('concurrency').value = valid.concurrency; get('delay').value = valid.delay; }
+    } catch (_) { /* Unavailable or invalid storage leaves conservative defaults. */ }
+    for (const id of ['concurrency', 'delay']) get(id).onchange = () => {
+      try {
+        const speed = settings();
+        try { localStorage.setItem('wrc_download_speed', JSON.stringify(speed)); } catch (_) {}
+        record('speed_changed', speed);
+      } catch (error) { status(error.message); }
+    };
+    get('export').onclick = () => {
+      const blob = new Blob([events.map(event => JSON.stringify(event)).join('\n') + '\n'], { type: 'application/x-ndjson' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url; link.download = 'wrc-download-log-' + new Date().toISOString().replace(/[:.]/g, '-') + '.jsonl';
+      link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     };
     get('min').onclick = () => { get('body').hidden = !get('body').hidden; };
     get('metadata').onchange = async () => {
@@ -116,7 +146,9 @@
     };
     get('stop').onclick = () => {
       stopped = true;
-      controller?.abort();
+      runReason = 'user_stop';
+      for (const controller of controllers) controller.abort();
+      record('stop_requested', { active: controllers.size });
       status('Stopping. Any file already being saved will finish.');
     };
     get('start').onclick = async () => {
@@ -136,73 +168,136 @@
       let plan;
       try { plan = scan(); files = plan.files; skipped.push(...plan.skipped); }
       catch (error) { status(error.message); return; }
-      for (const file of skipped) log(`SKIPPED: ${file.name} [ID ${file.id}] - zero Folder Entries`);
+      runId = new Date().toISOString() + '-' + events.length;
+      for (const file of skipped) record('row_skipped', { id: file.id, name: file.name, reason: 'zero Folder Entries' });
       log(`Scan: ${plan.matched} matching displayed records; ${files.length} files; ${plan.copies} folder copies; ${plan.missing} mapped IDs not eligible/displayed.`);
       if (!files.length) { status(`No eligible download links found. ${skipped.length} skipped.`); return; }
-      const delay = Number(get('delay').value);
-      if (!Number.isFinite(delay) || delay < 1 || delay > 60) {
-        status('Choose a pause between 1 and 60 seconds.'); return;
-      }
+      let speed;
+      try { speed = settings(); } catch (error) { status(error.message); return; }
       busy = true;
       stopped = false;
-      for (const id of ['start', 'folder', 'delay', 'metadata', 'tree', 'preview']) get(id).disabled = true;
+      runReason = '';
+      for (const id of ['start', 'folder', 'metadata', 'tree', 'preview']) get(id).disabled = true;
       get('stop').disabled = false;
-      let done = 0, failed = 0, savedCopies = 0;
+      let done = 0, failed = 0, savedCopies = 0, consecutiveFailures = 0, downloadedBytes = 0;
+      const startedAt = Date.now();
+      record('run_started', { version: '4.30', files: files.length, matched: plan.matched, copies: plan.copies, missing: plan.missing, zeroEntryRows: plan.skipped.length, ...speed });
       try {
-        for (let i = 0; i < files.length && !stopped; i++) {
-          const file = files[i];
-          status(`Downloading ${i + 1}/${files.length}: ${file.name}`);
-          controller = new AbortController();
+        await runDownloadPool(files, settings, async (file, launchSpeed) => {
+          const controller = new AbortController();
+          controllers.add(controller);
           const timeout = setTimeout(() => controller.abort(), 120000);
+          const fileStarted = Date.now();
+          let phase = 'destination';
+          record('file_started', { id: file.id, name: file.name, active: controllers.size, ...launchSpeed });
           try {
-            const targets = await pendingDownloadTargets(destination, file, message => log(message));
+            const targets = await pendingDownloadTargets(destination, file, message => record('copy_skipped', { id: file.id, name: file.name, destination: message.replace(/^SKIPPED: /, '') }));
             if (!targets.length) {
               skipped.push(file);
-              log(`SKIPPED: ${file.name} [ID ${file.id}] - file already exists`);
-              continue;
+              record('file_skipped', { id: file.id, name: file.name, reason: 'all copies already exist' });
+              return;
             }
+            if (stopped) return;
+            phase = 'resolve';
             const storageUrl = await resolveDownloadUrl(file.id, controller.signal);
+            phase = 'fetch';
             let response;
             try { response = await fetch(storageUrl, { credentials: 'omit', signal: controller.signal }); }
             catch (error) {
               if (error.name === 'AbortError') throw error;
               throw new Error('Storage fetch failed (network or browser cross-origin restriction). Run stopped.');
             }
-            if (!response.ok) throw new Error('HTTP ' + response.status);
+            if (!response.ok) {
+              const error = new Error('HTTP ' + response.status);
+              error.httpStatus = response.status;
+              error.retryAfter = safeDownloadRetryAfter(response.headers?.get('Retry-After'));
+              throw error;
+            }
+            record('response_received', { id: file.id, name: file.name, httpStatus: response.status || 200, elapsedMs: Date.now() - fileStarted });
             if (response.redirected && /login|signin|sign-in/i.test(response.url)) throw new Error('Session expired. Sign in again.');
+            phase = 'body';
             const blob = await response.blob();
-            if (stopped) break;
+            if (stopped) return;
+            downloadedBytes += blob.size;
             if (!blob.size) throw new Error('Empty response');
             // APEX authentication/error pages must never be saved as documents.
             if (/text\/html|application\/xhtml/i.test(blob.type) && !/\.html?$/i.test(file.name)) throw new Error('Server returned a web page instead of the file; file may be unavailable.');
+            phase = 'save';
             await saveDownloadCopies(targets, file.name, blob, () => stopped, message => {
               if (message.startsWith('Saved: ')) savedCopies++;
-              log(message);
+              record(message.startsWith('Saved: ') ? 'copy_saved' : 'copy_skipped', { id: file.id, name: file.name, destination: message.replace(/^(Saved|SKIPPED): /, '') });
             });
-            if (!stopped) done++;
+            if (!stopped) { done++; consecutiveFailures = 0; record('file_completed', { id: file.id, name: file.name, bytes: blob.size, elapsedMs: Date.now() - fileStarted }); }
           } catch (error) {
-            if (stopped) break;
+            if (stopped) { record('file_cancelled', { id: file.id, name: file.name, phase, reason: runReason }); return; }
             failed++;
-            log('FAILED: ' + file.name + ' [ID ' + file.id + '] - ' + (error.name === 'AbortError' ? 'Download timed out' : error.message));
+            consecutiveFailures++;
+            record('file_failed', { id: file.id, name: file.name, phase, error: downloadLogError(error), httpStatus: error.httpStatus || Number(error.message.match(/HTTP (\d+)/)?.[1]) || null, retryAfter: error.retryAfter || null, elapsedMs: Date.now() - fileStarted, ...launchSpeed });
             // Do not continue hammering a throttled or unauthorised session.
-            if (/HTTP (401|403|429|503)|Session expired|Storage fetch failed|APEX download helper unavailable/i.test(error.message)) {
+            if (/HTTP (401|403|429|503)|Session expired|Storage fetch failed|APEX download helper unavailable/i.test(error.message) || consecutiveFailures >= 3) {
               stopped = true;
-              log('Run stopped. Resolve the session or server issue before trying again.');
+              runReason = consecutiveFailures >= 3 ? 'repeated_failures' : 'blocking_response';
+              for (const active of controllers) active.abort();
+              record('run_halted', { reason: runReason, message: 'Resolve the session or server issue before trying again. No automatic retries.' });
             }
-          } finally { clearTimeout(timeout); controller = null; }
-          if (i < files.length - 1 && !stopped) {
-            const until = Date.now() + delay * 1000;
-            while (!stopped && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 200));
-          }
-        }
+          } finally { clearTimeout(timeout); controllers.delete(controller); }
+        }, () => stopped, progress => {
+          const seconds = Math.max(1, (Date.now() - startedAt) / 1000);
+          status(`${done}/${files.length} completed; ${progress.active} active; ${savedCopies} copies; ${failed} failed; ${(done * 60 / seconds).toFixed(1)} files/min, ${(downloadedBytes / 1048576 / seconds).toFixed(2)} MiB/s.`);
+        }, () => { stopped = true; runReason = 'invalid_speed'; for (const active of controllers) active.abort(); });
+      } catch (error) {
+        stopped = true; runReason = 'invalid_speed';
+        record('run_halted', { reason: runReason, error: downloadLogError(error) });
       } finally {
         busy = false;
         for (const id of ['start', 'folder', 'delay', 'metadata', 'preview']) get(id).disabled = false;
         get('tree').disabled = !metadata;
         get('stop').disabled = true;
+        record('run_finished', { done, failed, skipped: skipped.length, savedCopies, downloadedBytes, stopped, reason: runReason || 'complete', elapsedMs: Date.now() - startedAt });
         status(`${stopped ? 'Stopped' : 'Finished'}: ${done}/${files.length} files completed, ${savedCopies} copies saved, ${failed} failed, ${skipped.length} skipped. See results below.`);
       }
     };
+  }
+
+  function readDownloadSpeed(concurrency, delay) {
+    if (String(concurrency).trim() === '' || String(delay).trim() === '') throw new Error('Enter concurrency 1-8 and a start gap of 0-60 seconds.');
+    concurrency = Number(concurrency); delay = Number(delay);
+    if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8 || !Number.isFinite(delay) || delay < 0 || delay > 60) throw new Error('Enter concurrency 1-8 and a start gap of 0-60 seconds.');
+    return { concurrency, delay };
+  }
+
+  async function runDownloadPool(files, getSpeed, work, isStopped, progress, onError = () => {}) {
+    const active = new Set();
+    let next = 0, lastStart = -Infinity, failure = null;
+    const fail = error => { if (!failure) { failure = error; onError(error); } };
+    while (active.size || (next < files.length && !isStopped() && !failure)) {
+      if (!isStopped() && !failure && next < files.length) {
+        try {
+          const speed = getSpeed();
+          if (active.size < speed.concurrency && Date.now() - lastStart >= speed.delay * 1000) {
+            const file = files[next++]; lastStart = Date.now();
+            let task;
+            task = Promise.resolve().then(() => work(file, speed)).catch(fail).finally(() => active.delete(task));
+            active.add(task);
+          }
+        } catch (error) { fail(error); }
+      }
+      progress({ active: active.size, started: next, total: files.length });
+      if (active.size || (next < files.length && !isStopped() && !failure)) await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    if (failure) throw failure;
+  }
+
+  function safeDownloadRetryAfter(value) {
+    if (!value) return null;
+    if (/^\d{1,10}$/.test(value)) return value + ' seconds';
+    const date = Date.parse(value);
+    return Number.isFinite(date) ? new Date(date).toISOString() : null;
+  }
+
+  function downloadLogError(error) {
+    if (error.name === 'AbortError') return 'Download timed out';
+    return String(error.message || 'Unknown error').replace(/https?:\/\/[^\s]+/gi, '[URL redacted]').replace(/\b(?:session|token|cookie|authorization)\s*[=:]\s*[^\s,;]+/gi, '[credential redacted]').slice(0, 500);
   }
 
   function parseDownloadCsv(text) {
@@ -302,6 +397,7 @@
       if (await downloadFileExists(folder, name)) { log('SKIPPED: ' + label + ' - file already exists'); continue; }
       const handle = await folder.getFileHandle(name, { create: true });
       const writer = await handle.createWritable();
+      if (isStopped()) { await writer.abort().catch(() => {}); return; }
       try { await writer.write(blob); await writer.close(); }
       catch (error) { await writer.abort().catch(() => {}); throw error; }
       log('Saved: ' + label);
@@ -334,7 +430,11 @@
           },
           error(xhr, status) {
             cleanup();
-            reject(status === 'abort' ? new DOMException('Aborted', 'AbortError') : new Error('Download URL request failed' + (xhr?.status ? ': HTTP ' + xhr.status : '')));
+            if (status === 'abort') { reject(new DOMException('Aborted', 'AbortError')); return; }
+            const error = new Error('Download URL request failed' + (xhr?.status ? ': HTTP ' + xhr.status : ''));
+            error.httpStatus = xhr?.status || null;
+            error.retryAfter = safeDownloadRetryAfter(xhr?.getResponseHeader?.('Retry-After'));
+            reject(error);
           }
         });
       } catch (_) { cleanup(); reject(new Error('Download URL request could not start')); }
@@ -493,7 +593,7 @@
 
 
   // ── Pacing config ──────────────────────────────────────────────────────────
-  const SCRIPT_VERSION  = '4.29';
+  const SCRIPT_VERSION  = '4.30';
   const MIN_DELAY_S      = 5;
   const MAX_DELAY_S      = 12;
   const IFRAME_TIMEOUT_MS = 10000;
